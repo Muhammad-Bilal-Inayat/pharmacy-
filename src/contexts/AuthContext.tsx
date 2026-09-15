@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { User, Business, UserRole, AppUserRecord } from '../types';
+import { User, Business, UserRole, AppUserRecord, Tenant, TenantFeatureToggles, DEFAULT_TENANT_FEATURE_TOGGLES, InvoiceEditAuditRecord } from '../types';
 import { generateSeedData } from '../lib/seedData';
 import { ROLE_DEFINITIONS, normalizeUserRole } from '../lib/permissions';
 import { 
@@ -22,6 +22,13 @@ import {
   startImpersonationSession, 
   exitImpersonationSession 
 } from '../lib/impersonationService';
+import {
+  getAllTenants,
+  getTenantById,
+  saveTenant,
+  calculateTrialRemaining,
+  createTenantForRegistration
+} from '../lib/masterServerService';
 
 interface AuthContextType {
   currentUser: any | null;
@@ -33,6 +40,54 @@ interface AuthContextType {
   appUsers: AppUserRecord[];
   activityLogs: any[];
   loading: boolean;
+  
+  // Multi-Tenant & Trial
+  tenant: Tenant | null;
+  tenantId: string;
+  isTrialActive: boolean;
+  trialExpired: boolean;
+  trialRemaining: {
+    isExpired: boolean;
+    totalHoursLeft: number;
+    daysLeft: number;
+    hoursLeft: number;
+    minutesLeft: number;
+    formatted: string;
+  };
+  isFeatureEnabled: (feature: keyof TenantFeatureToggles) => boolean;
+
+  // RBAC & Permission helpers
+  canEditInvoices: boolean;
+  canEditBills: boolean;
+  isPrimaryAdmin: boolean;
+  isGuest: boolean;
+
+  // Guest protection & Registration
+  showAuthModal: boolean;
+  setShowAuthModal: (open: boolean) => void;
+  showTrialExpiredModal: boolean;
+  setShowTrialExpiredModal: (open: boolean) => void;
+  requireAuth: (actionName?: string) => boolean;
+  registerTenant: (params: {
+    storeName: string;
+    ownerName: string;
+    email: string;
+    phone: string;
+    password?: string;
+    city?: string;
+    address?: string;
+  }) => Promise<Tenant>;
+  refreshTenant: () => Promise<Tenant | null>;
+  switchTenant: (tenantId: string) => Promise<void>;
+  auditInvoiceEdit: (audit: {
+    invoiceId: string;
+    invoiceNumber: string;
+    originalGrandTotal: number;
+    newGrandTotal: number;
+    editReason?: string;
+    changesSummary?: string;
+  }) => Promise<void>;
+
   impersonationSession: ImpersonationSessionState | null;
   startImpersonating: (target: { licenseKey: string; clientName: string; ownerName: string; phone?: string; city?: string; businessProfile?: Business }) => Promise<void>;
   stopImpersonating: () => Promise<void>;
@@ -46,7 +101,9 @@ interface AuthContextType {
   updateBusiness: (updated: Partial<Business>) => Promise<void>;
   setActiveRole: (role: UserRole) => void;
   setActiveUser: (user: AppUserRecord | null) => void;
-  addAppUser: (user: Omit<AppUserRecord, 'id'>) => Promise<void>;
+  addAppUser: (user: Omit<AppUserRecord, 'id'> | AppUserRecord) => Promise<void>;
+  updateAppUser: (user: AppUserRecord) => Promise<void>;
+  removeAppUser: (userId: string) => Promise<void>;
   canAccess: (module: keyof typeof ROLE_DEFINITIONS['Primary Admin']['allowedModules']) => boolean;
   canPerform: (feature: keyof typeof ROLE_DEFINITIONS['Primary Admin']['features']) => boolean;
 }
@@ -117,6 +174,236 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [activeRole, setActiveRoleState] = useState<UserRole>('Primary Admin');
   const [activeUser, setActiveUserState] = useState<AppUserRecord | null>(null);
   const [impersonationSession, setImpersonationSession] = useState<ImpersonationSessionState | null>(() => getActiveImpersonation());
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showTrialExpiredModal, setShowTrialExpiredModal] = useState(false);
+
+  // Tenant state initialization
+  const [tenant, setTenant] = useState<Tenant | null>(() => {
+    try {
+      const cached = localStorage.getItem('mbi_active_tenant_cache');
+      if (cached) return JSON.parse(cached);
+      const all = getAllTenants();
+      return all[0] || null;
+    } catch {
+      return null;
+    }
+  });
+
+  const tenantId = tenant?.tenantId || business?.tenantId || business?.id || 'tenant-demo-01';
+
+  // Trial calculations
+  const isTrialActive = !!tenant?.isTrialActive;
+  const trialRemaining = calculateTrialRemaining(tenant?.trialExpiryDate);
+  const trialExpired = isTrialActive ? trialRemaining.isExpired : false;
+
+  // Guest detection
+  const isGuest = !currentUser || currentUser.isGuest || currentUser.role === 'Guest' || currentUser.email === 'guest@mbinventra.com';
+  const isPrimaryAdmin = activeRole === 'Primary Admin';
+
+  // Check if invoice editing is permitted for active user/role
+  const canEditBills = activeRole === 'Primary Admin' || (activeUser?.canEditInvoices ?? (ROLE_DEFINITIONS[activeRole]?.features?.canEditBills ?? false));
+  const canEditInvoices = canEditBills;
+
+  // Check if tenant has specific feature toggle active
+  const isFeatureEnabled = (feature: keyof TenantFeatureToggles): boolean => {
+    if (!tenant || !tenant.featureToggles) return true;
+    const val = tenant.featureToggles[feature];
+    return val !== undefined ? !!val : true;
+  };
+
+  // Require Auth guard helper
+  const requireAuth = (actionName?: string): boolean => {
+    if (isGuest) {
+      setShowAuthModal(true);
+      if (actionName) {
+        emitToast(`Please sign in or register to ${actionName}`, 'warning');
+      }
+      return false;
+    }
+    return true;
+  };
+
+  // Audit invoice edits
+  const auditInvoiceEdit = async (audit: {
+    invoiceId: string;
+    invoiceNumber: string;
+    originalGrandTotal: number;
+    newGrandTotal: number;
+    editReason?: string;
+    changesSummary?: string;
+  }) => {
+    const auditRecord: InvoiceEditAuditRecord = {
+      id: 'aud_' + Date.now(),
+      tenantId,
+      invoiceId: audit.invoiceId,
+      invoiceNumber: audit.invoiceNumber,
+      editedByUserId: activeUser?.id || currentUser?.uid || 'u1',
+      editedByUserName: activeUser?.name || currentUser?.displayName || 'Admin',
+      editedByUserRole: activeRole,
+      timestamp: new Date().toISOString(),
+      originalGrandTotal: audit.originalGrandTotal,
+      newGrandTotal: audit.newGrandTotal,
+      editReason: audit.editReason || 'Standard revision',
+      changesSummary: audit.changesSummary || 'Modified items / discount'
+    };
+
+    try {
+      const stored = localStorage.getItem(`mbi_invoice_audits_${tenantId}`) || '[]';
+      const parsed: InvoiceEditAuditRecord[] = JSON.parse(stored);
+      parsed.unshift(auditRecord);
+      localStorage.setItem(`mbi_invoice_audits_${tenantId}`, JSON.stringify(parsed.slice(0, 500)));
+
+      if (navigator.onLine) {
+        saveRecordToFirestore('invoice_audits', auditRecord.id, auditRecord).catch(() => {});
+      }
+
+      const logEntry = {
+        id: 'l_' + Date.now(),
+        userName: auditRecord.editedByUserName,
+        userRole: auditRecord.editedByUserRole,
+        details: `Edited Invoice #${audit.invoiceNumber} (${audit.originalGrandTotal} -> ${audit.newGrandTotal}) Reason: ${audit.editReason || 'Updated'}`,
+        timestamp: Date.now()
+      };
+      await dbUserActivities.save(logEntry as any);
+      setActivityLogs(prev => [logEntry, ...prev]);
+    } catch (e) {
+      console.error('Failed to log invoice edit audit:', e);
+    }
+  };
+
+  // Refresh active tenant
+  const refreshTenant = async (): Promise<Tenant | null> => {
+    try {
+      if (!tenantId) return null;
+      const loaded = getTenantById(tenantId);
+      if (loaded) {
+        setTenant(loaded);
+        localStorage.setItem('mbi_active_tenant_cache', JSON.stringify(loaded));
+        return loaded;
+      }
+    } catch (e) {}
+    return null;
+  };
+
+  // Switch tenant
+  const switchTenant = async (newTenantId: string) => {
+    const target = getTenantById(newTenantId);
+    if (target) {
+      setTenant(target);
+      localStorage.setItem('mbi_active_tenant_cache', JSON.stringify(target));
+      if (business) {
+        const updatedBiz: Business = {
+          ...business,
+          id: target.tenantId,
+          tenantId: target.tenantId,
+          name: target.name,
+          phone: target.ownerPhone || business.phone,
+          city: target.city || business.city,
+          address: target.address || business.address,
+        };
+        setBusiness(updatedBiz);
+        localStorage.setItem('mock_business', JSON.stringify(updatedBiz));
+      }
+      emitToast(`Switched active tenant to: ${target.name}`, 'info');
+    }
+  };
+
+  // Register a new tenant with 3-day trial
+  const registerTenant = async (params: {
+    storeName: string;
+    ownerName: string;
+    email: string;
+    phone: string;
+    password?: string;
+    city?: string;
+    address?: string;
+  }): Promise<Tenant> => {
+    let uid = 'u_' + Date.now();
+    let fbUser: FirebaseUser | null = null;
+
+    if (params.password) {
+      try {
+        fbUser = await registerWithEmailPassword(params.email, params.password);
+        if (fbUser) uid = fbUser.uid;
+      } catch (e) {
+        // Fallback to local
+      }
+    }
+
+    const newTenant = createTenantForRegistration({
+      storeName: params.storeName,
+      ownerName: params.ownerName,
+      email: params.email,
+      phone: params.phone,
+      city: params.city,
+      address: params.address,
+      primaryAdminId: uid,
+    });
+
+    setTenant(newTenant);
+    localStorage.setItem('mbi_active_tenant_cache', JSON.stringify(newTenant));
+
+    const userObj = {
+      uid,
+      email: params.email,
+      displayName: params.ownerName,
+      role: 'Primary Admin'
+    };
+    setCurrentUser(userObj);
+    localStorage.setItem('mock_session', JSON.stringify(userObj));
+
+    const prof: User = {
+      id: uid,
+      email: params.email,
+      name: params.ownerName,
+      role: 'Admin',
+      pin: '0000',
+      businessId: newTenant.tenantId,
+      createdAt: new Date().toISOString()
+    };
+    setUserProfile(prof);
+    localStorage.setItem('mock_user_profile', JSON.stringify(prof));
+
+    const newBiz: Business = {
+      ...DEFAULT_BUSINESS_PROFILE,
+      id: newTenant.tenantId,
+      tenantId: newTenant.tenantId,
+      name: params.storeName,
+      ownerUid: uid,
+      members: [uid],
+      phone: params.phone,
+      mobile: params.phone,
+      email: params.email,
+      address: params.address || `${params.city || 'Lahore'}, Pakistan`,
+      city: params.city || 'Lahore',
+      invoicePrefix: params.storeName.slice(0, 3).toUpperCase() + '-',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    setBusiness(newBiz);
+    localStorage.setItem('mock_business', JSON.stringify(newBiz));
+
+    setActiveRoleState('Primary Admin');
+    setActiveUserState(null);
+
+    // Add Primary Admin to app users
+    const primaryAdminAppUser: AppUserRecord = {
+      id: uid,
+      name: params.ownerName,
+      emailOrPhone: params.phone || params.email,
+      role: 'Primary Admin',
+      status: 'Joined',
+      passcode: '0000',
+      tenantId: newTenant.tenantId,
+      canEditInvoices: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    await addAppUser(primaryAdminAppUser);
+
+    emitToast(`Welcome to MBI Inventra! 3-Day Free Trial activated for ${newTenant.name}`, 'success');
+    return newTenant;
+  };
 
   const [appUsers, setAppUsers] = useState<AppUserRecord[]>([
     { id: 'u1', name: 'M Bilal Inayat', emailOrPhone: '03364585863', role: 'Primary Admin', status: 'Joined', passcode: '0000' },
@@ -142,16 +429,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (e) {}
   };
 
-  const addAppUser = async (newUser: Omit<AppUserRecord, 'id'>) => {
+  const addAppUser = async (newUser: Omit<AppUserRecord, 'id'> | AppUserRecord) => {
     const created: AppUserRecord = { 
       ...newUser, 
-      id: 'u_' + Date.now(),
-      createdAt: new Date().toISOString(),
+      id: ('id' in newUser && newUser.id) ? newUser.id : 'u_' + Date.now(),
+      createdAt: newUser.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
     await dbAppUsers.save(created);
-    const updated = [created, ...appUsers];
+    const updated = [created, ...appUsers.filter(u => u.id !== created.id)];
     setAppUsers(updated);
+
+    if (navigator.onLine && business?.id) {
+      saveRecordToFirestore('app_users', created.id, {
+        ...created,
+        businessId: business.id
+      }).catch(() => {});
+    }
 
     const logEntry = {
       id: 'l_' + Date.now(),
@@ -162,6 +456,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
     await dbUserActivities.save(logEntry as any);
     setActivityLogs(prev => [logEntry, ...prev]);
+  };
+
+  const updateAppUser = async (user: AppUserRecord) => {
+    await dbAppUsers.save(user);
+    setAppUsers(prev => prev.map(u => u.id === user.id ? user : u));
+
+    if (navigator.onLine && business?.id) {
+      saveRecordToFirestore('app_users', user.id, {
+        ...user,
+        businessId: business.id
+      }).catch(() => {});
+    }
+  };
+
+  const removeAppUser = async (userId: string) => {
+    await dbAppUsers.delete(userId);
+    setAppUsers(prev => prev.filter(u => u.id !== userId));
   };
 
   const setActiveRole = (role: UserRole) => {
@@ -676,6 +987,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         appUsers,
         activityLogs,
         loading, 
+
+        // Multi-Tenant & Trial
+        tenant,
+        tenantId,
+        isTrialActive,
+        trialExpired,
+        trialRemaining,
+        isFeatureEnabled,
+
+        // RBAC & Bill permissions
+        canEditInvoices,
+        canEditBills,
+        isPrimaryAdmin,
+        isGuest,
+
+        // Modals & User Management
+        showAuthModal,
+        setShowAuthModal,
+        showTrialExpiredModal,
+        setShowTrialExpiredModal,
+        requireAuth,
+        registerTenant,
+        refreshTenant,
+        switchTenant,
+        auditInvoiceEdit,
+
         impersonationSession,
         startImpersonating,
         stopImpersonating,
@@ -690,6 +1027,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setActiveRole,
         setActiveUser,
         addAppUser,
+        updateAppUser,
+        removeAppUser,
         canAccess,
         canPerform,
       }}

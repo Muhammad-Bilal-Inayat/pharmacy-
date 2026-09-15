@@ -6,7 +6,8 @@ import {
   Plus, Send, Eye, EyeOff, Save, Settings, Database, Users, Sparkles,
   FileText, Shield, Radio, ArrowRight, Laptop, HelpCircle, UserCheck,
   Cpu, Power, AlertCircle, Clock, Zap, History, DollarSign, Package,
-  Layers, ExternalLink, Sliders, PlayCircle, BarChart3, Terminal, FileCode
+  Layers, ExternalLink, Sliders, PlayCircle, BarChart3, Terminal, FileCode,
+  Building2, Store, RotateCcw, CheckSquare, ToggleLeft, ToggleRight
 } from 'lucide-react';
 import { 
   getMasterServerConfig, saveMasterServerConfig, isMasterAdminAuthenticated,
@@ -16,9 +17,16 @@ import {
   generateNewLicenseKey, resetLicenseHardware, dispatchRemoteCommand,
   getMasterAuditLogs, clearMasterAuditLogs, logMasterAudit,
   getMasterActiveUsers, updateMasterUserStatus, forceDisconnectMasterUser,
+  saveMasterActiveUser, createMasterActiveUser, deleteMasterActiveUser,
+  updateMasterUserPermissions, updateMasterUserModules, resetMasterUserPasscode,
+  updateMasterUserSettings, clearMasterUserHardwareLock,
   triggerRemoteBackupForClient, executeRemoteKillSwitch, unlockRemoteInstance,
+  getAllTenants, saveTenant, deleteTenant, resetTenantTrial,
+  activatePaidTenantLicense, updateTenantFeatureToggles, updateTenantStatus,
+  calculateTrialRemaining,
   ClientLicense, ClientInstanceHeartbeat, ClientBackupRecord, MasterAuditLog, MasterActiveUser,
-  DEFAULT_MODULES, ModulePermissions
+  MasterUserPermissions, DEFAULT_USER_PERMISSIONS,
+  DEFAULT_MODULES, ModulePermissions, Tenant, TenantFeatureToggles
 } from '../../lib/masterServerService';
 import { exportFullBackup, restoreFullBackup, verifyDatabaseIntegrity } from '../../lib/db';
 import { 
@@ -33,7 +41,7 @@ interface MasterServerControlModalProps {
   onClose: () => void;
 }
 
-type TabType = 'overview' | 'licenses' | 'instances' | 'users' | 'backups' | 'audit' | '2fa' | 'deployment';
+type TabType = 'overview' | 'tenants' | 'licenses' | 'instances' | 'users' | 'backups' | 'audit' | '2fa' | 'deployment';
 
 export const MasterServerControlModal: React.FC<MasterServerControlModalProps> = ({ isOpen, onClose }) => {
   const { startImpersonating } = useAuth();
@@ -124,6 +132,36 @@ export const MasterServerControlModal: React.FC<MasterServerControlModalProps> =
   // Backup Inspection State
   const [inspectingBackup, setInspectingBackup] = useState<ClientBackupRecord | null>(null);
 
+  // User Control & Permissions Switchboard Modal State
+  const [controlModalUser, setControlModalUser] = useState<MasterActiveUser | null>(null);
+  const [userPasscodeResetInput, setUserPasscodeResetInput] = useState('');
+  const [userControlActiveTab, setUserControlActiveTab] = useState<'modules' | 'permissions' | 'security'>('modules');
+
+  // Tenant Fleet & 3-Day Trial State
+  const [tenants, setTenants] = useState<Tenant[]>(() => getAllTenants());
+  const [tenantSearch, setTenantSearch] = useState('');
+  const [tenantStatusFilter, setTenantStatusFilter] = useState('all');
+  const [selectedTenantForToggles, setSelectedTenantForToggles] = useState<Tenant | null>(null);
+  const [isAddTenantModalOpen, setIsAddTenantModalOpen] = useState(false);
+  const [newTenantStoreName, setNewTenantStoreName] = useState('');
+  const [newTenantOwnerName, setNewTenantOwnerName] = useState('');
+  const [newTenantEmail, setNewTenantEmail] = useState('');
+  const [newTenantPhone, setNewTenantPhone] = useState('');
+  const [newTenantCity, setNewTenantCity] = useState('Lahore');
+  const [newTenantAddress, setNewTenantAddress] = useState('');
+  const [newTenantPlan, setNewTenantPlan] = useState<Tenant['plan']>('3-Day Free Trial');
+  const [newTenantTrialDays, setNewTenantTrialDays] = useState(3);
+
+  // Add New User Modal State
+  const [isAddUserModalOpen, setIsAddUserModalOpen] = useState(false);
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserPhone, setNewUserPhone] = useState('');
+  const [newUserRole, setNewUserRole] = useState<MasterActiveUser['role']>('Cashier');
+  const [newUserPasscode, setNewUserPasscode] = useState('1234');
+  const [newUserStoreName, setNewUserStoreName] = useState('');
+  const [newUserModules, setNewUserModules] = useState<ModulePermissions>({ ...DEFAULT_MODULES });
+  const [newUserPermissions, setNewUserPermissions] = useState<MasterUserPermissions>({ ...DEFAULT_USER_PERMISSIONS });
+
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 3500);
@@ -151,6 +189,8 @@ export const MasterServerControlModal: React.FC<MasterServerControlModalProps> =
     setInstances(inst);
     const u = getMasterActiveUsers();
     setActiveUsers(u);
+    const t = getAllTenants();
+    setTenants(t);
     setAuditLogs(getMasterAuditLogs());
     
     // Fetch stored backups from server endpoint
@@ -165,6 +205,125 @@ export const MasterServerControlModal: React.FC<MasterServerControlModalProps> =
     } catch (e) {
       setBackups(getAllClientBackups());
     }
+  };
+
+  // Tenant Operations
+  const handleResetTenantTrial = (tenantId: string, days = 3) => {
+    const updated = resetTenantTrial(tenantId, days);
+    setTenants(getAllTenants());
+    logMasterAudit('Trial Reset', 'SECURITY', `Reset ${days}-Day Trial for Tenant ${updated.name} (${tenantId})`, updated.name);
+    setAuditLogs(getMasterAuditLogs());
+    showToast(`3-Day Free Trial renewed for ${updated.name}!`);
+  };
+
+  const handleActivateTenantPaid = (tenantId: string, plan: Tenant['plan'] = 'Standard POS') => {
+    const updated = activatePaidTenantLicense(tenantId, plan);
+    setTenants(getAllTenants());
+    logMasterAudit('Paid License Activated', 'SECURITY', `Activated plan "${plan}" for Tenant ${updated.name} (${tenantId})`, updated.name);
+    setAuditLogs(getMasterAuditLogs());
+    showToast(`Paid License (${plan}) successfully activated for ${updated.name}!`);
+  };
+
+  const handleToggleTenantStatus = (tenant: Tenant) => {
+    const nextStatus = tenant.status === 'Active' ? 'Suspended' : 'Active';
+    updateTenantStatus(tenant.tenantId, nextStatus);
+    setTenants(getAllTenants());
+    logMasterAudit('Tenant Status Changed', 'SECURITY', `Status changed to ${nextStatus} for ${tenant.name}`, tenant.name);
+    setAuditLogs(getMasterAuditLogs());
+    showToast(`Tenant ${tenant.name} status updated to: ${nextStatus}`);
+  };
+
+  const handleDeleteTenant = (tenant: Tenant) => {
+    if (window.confirm(`Are you sure you want to permanently delete tenant "${tenant.name}" (${tenant.tenantId})?`)) {
+      deleteTenant(tenant.tenantId);
+      setTenants(getAllTenants());
+      logMasterAudit('Tenant Deleted', 'SECURITY', `Permanently removed tenant record for ${tenant.name}`, tenant.name);
+      setAuditLogs(getMasterAuditLogs());
+      showToast(`Tenant ${tenant.name} removed from fleet.`);
+    }
+  };
+
+  const handleToggleTenantFeature = (tenantId: string, feature: keyof TenantFeatureToggles, value: boolean) => {
+    const updated = updateTenantFeatureToggles(tenantId, { [feature]: value });
+    setTenants(getAllTenants());
+    if (selectedTenantForToggles && selectedTenantForToggles.tenantId === tenantId) {
+      setSelectedTenantForToggles(updated);
+    }
+    logMasterAudit('Feature Toggle Updated', 'SECURITY', `Feature "${String(feature)}" set to ${value} for Tenant ${updated.name}`, updated.name);
+    setAuditLogs(getMasterAuditLogs());
+    showToast(`Updated feature "${String(feature)}" for ${updated.name}`);
+  };
+
+  const handleImpersonateTenant = (t: Tenant) => {
+    startImpersonating({
+      clientName: t.name,
+      ownerName: t.ownerName,
+      licenseKey: t.licenseId || `MBI-${t.tenantId.toUpperCase()}`,
+      plan: t.plan === '3-Day Free Trial' ? 'Trial' : (t.plan as any),
+      isLifetime: t.plan === 'Lifetime Perpetual',
+      maxDevices: t.maxDevices || 3,
+      enabledModules: { ...DEFAULT_MODULES }
+    });
+    onClose();
+  };
+
+  const handleCreateNewTenant = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newTenantStoreName.trim() || !newTenantOwnerName.trim()) {
+      alert('Please enter Store Name and Owner Name.');
+      return;
+    }
+
+    const tId = 't_' + Date.now();
+    const createdTenant: Tenant = {
+      id: tId,
+      tenantId: tId,
+      organizationId: 'org_' + Date.now(),
+      licenseId: `MBI-LIC-${Math.random().toString(36).substring(2, 8).toUpperCase()}`,
+      name: newTenantStoreName.trim(),
+      ownerName: newTenantOwnerName.trim(),
+      ownerEmail: newTenantEmail.trim() || `${newTenantOwnerName.toLowerCase().replace(/\s+/g, '')}@gmail.com`,
+      ownerPhone: newTenantPhone.trim() || '03364585863',
+      city: newTenantCity || 'Lahore',
+      address: newTenantAddress || `${newTenantCity || 'Lahore'}, Pakistan`,
+      plan: newTenantPlan,
+      status: 'Active',
+      primaryAdminId: 'u_' + Date.now(),
+      trialStartDate: new Date().toISOString(),
+      trialExpiryDate: new Date(Date.now() + (newTenantTrialDays * 24 * 60 * 60 * 1000)).toISOString(),
+      isTrialActive: newTenantPlan === '3-Day Free Trial',
+      trialExpired: false,
+      paidLicenseActive: newTenantPlan !== '3-Day Free Trial',
+      maxDevices: 3,
+      featureToggles: {
+        canEditBills: true,
+        canDeleteBills: false,
+        canManageBatches: true,
+        canViewPurchasePrice: true,
+        canAccessStockAudit: true,
+        onlineStore: true,
+        narcoticsSchedule: false,
+        loyaltyProgram: true,
+        multiBranch: false,
+        aiVoiceAssistant: true,
+        taxFbrIntegration: false,
+      },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    saveTenant(createdTenant);
+    setTenants(getAllTenants());
+    setIsAddTenantModalOpen(false);
+    setNewTenantStoreName('');
+    setNewTenantOwnerName('');
+    setNewTenantEmail('');
+    setNewTenantPhone('');
+    setNewTenantAddress('');
+
+    logMasterAudit('New Tenant Created', 'SECURITY', `Created new tenant ${createdTenant.name} (${createdTenant.plan})`, createdTenant.name);
+    setAuditLogs(getMasterAuditLogs());
+    showToast(`New Tenant "${createdTenant.name}" created with 3-Day Trial!`);
   };
 
   // Handle Login to Master Panel
@@ -209,7 +368,7 @@ export const MasterServerControlModal: React.FC<MasterServerControlModalProps> =
       const secret = config.totpSecret || generateTOTPSecret(20);
       setTotpSetupSecret(secret);
       const uri = generateTOTPUri(secret, config.masterUsername, 'MBI Inventra Server');
-      generateQRCodeDataUrl(uri).then(url => setQrCodeUrl(url));
+      generateQRCodeDataUrl(uri).then(url => setQrCodeUrl(url)).catch(() => {});
       
       // Update live current TOTP ticker
       const updateTicker = () => {
@@ -595,6 +754,131 @@ export const MasterServerControlModal: React.FC<MasterServerControlModalProps> =
     showToast(res.message);
   };
 
+  // Open User Control Switchboard Modal
+  const handleOpenUserControl = (user: MasterActiveUser) => {
+    setControlModalUser({
+      ...user,
+      allowedModules: user.allowedModules || { ...DEFAULT_MODULES },
+      permissions: user.permissions || { ...DEFAULT_USER_PERMISSIONS }
+    });
+    setUserPasscodeResetInput(user.passcode || '1234');
+    setUserControlActiveTab('modules');
+  };
+
+  // Toggle Module Access for Selected User
+  const handleToggleControlUserModule = (moduleKey: keyof ModulePermissions) => {
+    if (!controlModalUser) return;
+    const currentModules = controlModalUser.allowedModules || { ...DEFAULT_MODULES };
+    const updatedModules = { ...currentModules, [moduleKey]: !currentModules[moduleKey] };
+    const updatedUser = { ...controlModalUser, allowedModules: updatedModules };
+    setControlModalUser(updatedUser);
+    const updatedList = saveMasterActiveUser(updatedUser);
+    setActiveUsers(updatedList);
+    setAuditLogs(getMasterAuditLogs());
+    showToast(`Module "${moduleKey}" is now ${updatedModules[moduleKey] ? 'ENABLED' : 'DISABLED'} for ${controlModalUser.name}`);
+  };
+
+  // Toggle Granular Permission for Selected User
+  const handleToggleControlUserPermission = (permKey: keyof MasterUserPermissions) => {
+    if (!controlModalUser) return;
+    const currentPerms = controlModalUser.permissions || { ...DEFAULT_USER_PERMISSIONS };
+    const updatedPerms = { ...currentPerms, [permKey]: !currentPerms[permKey] };
+    const updatedUser = { ...controlModalUser, permissions: updatedPerms };
+    setControlModalUser(updatedUser);
+    const updatedList = saveMasterActiveUser(updatedUser);
+    setActiveUsers(updatedList);
+    setAuditLogs(getMasterAuditLogs());
+    showToast(`Permission "${permKey}" updated for ${controlModalUser.name}`);
+  };
+
+  // Update Max Discount Limit for Selected User
+  const handleUpdateControlUserMaxDiscount = (maxPercent: number) => {
+    if (!controlModalUser) return;
+    const currentPerms = controlModalUser.permissions || { ...DEFAULT_USER_PERMISSIONS };
+    const updatedPerms = { ...currentPerms, maxDiscountPercent: maxPercent };
+    const updatedUser = { ...controlModalUser, permissions: updatedPerms };
+    setControlModalUser(updatedUser);
+    const updatedList = saveMasterActiveUser(updatedUser);
+    setActiveUsers(updatedList);
+    setAuditLogs(getMasterAuditLogs());
+  };
+
+  // Reset User Passcode
+  const handleResetControlUserPasscode = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!controlModalUser || !userPasscodeResetInput.trim()) return;
+    const res = resetMasterUserPasscode(controlModalUser.id, userPasscodeResetInput.trim());
+    if (res.success) {
+      setControlModalUser({ ...controlModalUser, passcode: userPasscodeResetInput.trim() });
+      setActiveUsers(res.users);
+      setAuditLogs(getMasterAuditLogs());
+      showToast(res.message);
+    }
+  };
+
+  // Clear Hardware Lock for User
+  const handleClearControlUserHwid = () => {
+    if (!controlModalUser) return;
+    if (window.confirm(`Clear hardware lock (HWID) for "${controlModalUser.name}"? They will be able to log in from any authorized terminal.`)) {
+      const updatedList = clearMasterUserHardwareLock(controlModalUser.id);
+      const refreshed = updatedList.find(u => u.id === controlModalUser.id) || null;
+      setControlModalUser(refreshed);
+      setActiveUsers(updatedList);
+      setAuditLogs(getMasterAuditLogs());
+      showToast(`Hardware lock cleared for ${controlModalUser.name}`);
+    }
+  };
+
+  // Delete User Account
+  const handleDeleteControlUser = (userId: string, userName: string) => {
+    if (window.confirm(`Are you sure you want to permanently delete user account "${userName}"? This cannot be undone.`)) {
+      const updatedList = deleteMasterActiveUser(userId);
+      setActiveUsers(updatedList);
+      setAuditLogs(getMasterAuditLogs());
+      setControlModalUser(null);
+      showToast(`User account "${userName}" deleted.`);
+    }
+  };
+
+  // Open Provision New User Modal
+  const handleOpenAddUser = () => {
+    setNewUserName('');
+    setNewUserPhone('');
+    setNewUserRole('Cashier');
+    setNewUserPasscode('1234');
+    setNewUserStoreName(licenses[0]?.clientName || 'Main Branch');
+    setNewUserModules({ ...DEFAULT_MODULES });
+    setNewUserPermissions({ ...DEFAULT_USER_PERMISSIONS });
+    setIsAddUserModalOpen(true);
+  };
+
+  // Submit New User
+  const handleCreateNewUserSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUserName.trim() || !newUserPhone.trim() || !newUserStoreName.trim()) {
+      alert('Please fill in all required user fields.');
+      return;
+    }
+
+    const created = createMasterActiveUser({
+      name: newUserName.trim(),
+      emailOrPhone: newUserPhone.trim(),
+      role: newUserRole,
+      status: 'Active',
+      passcode: newUserPasscode.trim() || '1234',
+      storeName: newUserStoreName.trim(),
+      allowedModules: newUserModules,
+      permissions: newUserPermissions,
+      isOnline: true,
+      lastSyncTime: new Date().toISOString()
+    });
+
+    setActiveUsers(getMasterActiveUsers());
+    setAuditLogs(getMasterAuditLogs());
+    setIsAddUserModalOpen(false);
+    showToast(`User "${created.name}" (${created.role}) created and synced to server!`);
+  };
+
   // Fleet Telemetry Calculations
   const totalFleetInvoices = instances.reduce((acc, i) => acc + (i.dataMetrics?.totalInvoices || 0), 0);
   const totalFleetItems = instances.reduce((acc, i) => acc + (i.dataMetrics?.totalItems || 0), 0);
@@ -779,6 +1063,18 @@ export const MasterServerControlModal: React.FC<MasterServerControlModalProps> =
               >
                 <Activity className="w-4 h-4" />
                 <span>Fleet Overview & Telemetry</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('tenants')}
+                className={`px-4 py-3 text-xs font-bold border-b-2 transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
+                  activeTab === 'tenants' 
+                    ? 'border-emerald-500 text-emerald-400 bg-emerald-950/20' 
+                    : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                }`}
+              >
+                <Building2 className="w-4 h-4 text-emerald-400" />
+                <span>Multi-Tenants & 3-Day Trials ({tenants.length})</span>
               </button>
 
               <button
@@ -1047,6 +1343,277 @@ export const MasterServerControlModal: React.FC<MasterServerControlModalProps> =
                         )}
                       </div>
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ================================================================= */}
+              {/* TAB: MULTI-TENANTS & 3-DAY TRIALS CONTROL */}
+              {/* ================================================================= */}
+              {activeTab === 'tenants' && (
+                <div className="space-y-6">
+                  {/* Tenant Fleet Metrics */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="p-4 bg-slate-800/80 border border-slate-700/80 rounded-2xl shadow-lg">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Total Tenant Stores</span>
+                        <div className="p-2 rounded-xl bg-emerald-500/20 text-emerald-400">
+                          <Building2 className="w-5 h-5" />
+                        </div>
+                      </div>
+                      <div className="mt-2 flex items-baseline gap-2">
+                        <span className="text-2xl font-black text-white">{tenants.length}</span>
+                        <span className="text-xs font-bold text-emerald-400">Stores Registered</span>
+                      </div>
+                    </div>
+
+                    <div className="p-4 bg-slate-800/80 border border-slate-700/80 rounded-2xl shadow-lg">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Active 3-Day Trials</span>
+                        <div className="p-2 rounded-xl bg-blue-500/20 text-blue-400">
+                          <Clock className="w-5 h-5" />
+                        </div>
+                      </div>
+                      <div className="mt-2 flex items-baseline gap-2">
+                        <span className="text-2xl font-black text-white">
+                          {tenants.filter(t => t.isTrialActive && !calculateTrialRemaining(t.trialExpiryDate).isExpired).length}
+                        </span>
+                        <span className="text-xs font-bold text-blue-400">Trials In Progress</span>
+                      </div>
+                    </div>
+
+                    <div className="p-4 bg-slate-800/80 border border-slate-700/80 rounded-2xl shadow-lg">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Expired Trials</span>
+                        <div className="p-2 rounded-xl bg-amber-500/20 text-amber-400">
+                          <AlertTriangle className="w-5 h-5" />
+                        </div>
+                      </div>
+                      <div className="mt-2 flex items-baseline gap-2">
+                        <span className="text-2xl font-black text-amber-400">
+                          {tenants.filter(t => t.isTrialActive && calculateTrialRemaining(t.trialExpiryDate).isExpired).length}
+                        </span>
+                        <span className="text-xs font-bold text-slate-400">Need Renewal / Upgrade</span>
+                      </div>
+                    </div>
+
+                    <div className="p-4 bg-slate-800/80 border border-slate-700/80 rounded-2xl shadow-lg">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Paid Subscriptions</span>
+                        <div className="p-2 rounded-xl bg-purple-500/20 text-purple-400">
+                          <DollarSign className="w-5 h-5" />
+                        </div>
+                      </div>
+                      <div className="mt-2 flex items-baseline gap-2">
+                        <span className="text-2xl font-black text-white">
+                          {tenants.filter(t => t.paidLicenseActive).length}
+                        </span>
+                        <span className="text-xs font-bold text-purple-400">Paid Licenses</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Toolbar */}
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 w-full sm:w-auto flex-1 max-w-md">
+                      <div className="relative w-full">
+                        <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          placeholder="Search store name, owner, phone, email, tenantId..."
+                          value={tenantSearch}
+                          onChange={(e) => setTenantSearch(e.target.value)}
+                          className="w-full pl-9 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap">
+                      <select
+                        value={tenantStatusFilter}
+                        onChange={(e) => setTenantStatusFilter(e.target.value)}
+                        className="px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold text-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+                      >
+                        <option value="all">All Statuses ({tenants.length})</option>
+                        <option value="trial">Active 3-Day Trials</option>
+                        <option value="expired">Expired Trials</option>
+                        <option value="paid">Paid Customers</option>
+                        <option value="suspended">Suspended Stores</option>
+                      </select>
+
+                      <button
+                        onClick={refreshAllData}
+                        className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer border border-slate-700"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Refresh</span>
+                      </button>
+
+                      <button
+                        onClick={() => setIsAddTenantModalOpen(true)}
+                        className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-lg shadow-emerald-600/30"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>Onboard New Tenant Store</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Tenant Cards List */}
+                  <div className="space-y-3">
+                    {tenants
+                      .filter(t => {
+                        const matchQuery = 
+                          t.name.toLowerCase().includes(tenantSearch.toLowerCase()) ||
+                          t.ownerName.toLowerCase().includes(tenantSearch.toLowerCase()) ||
+                          t.ownerPhone?.toLowerCase().includes(tenantSearch.toLowerCase()) ||
+                          t.ownerEmail.toLowerCase().includes(tenantSearch.toLowerCase()) ||
+                          t.tenantId.toLowerCase().includes(tenantSearch.toLowerCase());
+                        
+                        if (!matchQuery) return false;
+
+                        const trialInfo = calculateTrialRemaining(t.trialExpiryDate);
+                        if (tenantStatusFilter === 'trial') return t.isTrialActive && !trialInfo.isExpired;
+                        if (tenantStatusFilter === 'expired') return t.isTrialActive && trialInfo.isExpired;
+                        if (tenantStatusFilter === 'paid') return t.paidLicenseActive;
+                        if (tenantStatusFilter === 'suspended') return t.status === 'Suspended';
+                        return true;
+                      })
+                      .map(t => {
+                        const trialInfo = calculateTrialRemaining(t.trialExpiryDate);
+                        return (
+                          <div
+                            key={t.tenantId}
+                            className={`p-4 bg-slate-850 border rounded-2xl transition-all ${
+                              t.status === 'Suspended' ? 'border-rose-800/60 bg-rose-950/10' :
+                              (t.isTrialActive && trialInfo.isExpired) ? 'border-amber-700/60 bg-amber-950/10' :
+                              'border-slate-700 hover:border-slate-600'
+                            }`}
+                          >
+                            <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+                              {/* Left Info */}
+                              <div className="space-y-1.5 flex-1 min-w-0">
+                                <div className="flex items-center gap-2.5 flex-wrap">
+                                  <div className="p-2 rounded-xl bg-emerald-950/80 border border-emerald-700/50 text-emerald-400">
+                                    <Store className="w-4 h-4" />
+                                  </div>
+                                  <div>
+                                    <h4 className="text-sm font-black text-white flex items-center gap-2">
+                                      <span>{t.name}</span>
+                                      <span className="text-[11px] font-mono text-slate-400">({t.tenantId})</span>
+                                    </h4>
+                                    <p className="text-xs text-slate-300">
+                                      Owner: <span className="font-bold text-white">{t.ownerName}</span> • Phone: <span className="font-bold text-slate-300">{t.ownerPhone || 'N/A'}</span> • City: <span className="font-bold text-slate-300">{t.city || 'Pakistan'}</span>
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-2 text-[11px] flex-wrap pt-1">
+                                  <span className={`px-2.5 py-0.5 rounded-full font-black ${
+                                    t.paidLicenseActive ? 'bg-purple-950 text-purple-300 border border-purple-700/50' : 'bg-blue-950 text-blue-300 border border-blue-700/50'
+                                  }`}>
+                                    {t.plan}
+                                  </span>
+
+                                  <span className={`px-2 py-0.5 rounded-full font-bold ${
+                                    t.status === 'Active' ? 'bg-emerald-950 text-emerald-300 border border-emerald-700/50' :
+                                    t.status === 'Suspended' ? 'bg-rose-950 text-rose-300 border border-rose-700/50' :
+                                    'bg-amber-950 text-amber-300 border border-amber-700/50'
+                                  }`}>
+                                    Status: {t.status}
+                                  </span>
+
+                                  {t.isTrialActive && (
+                                    <span className={`px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1 ${
+                                      trialInfo.isExpired 
+                                        ? 'bg-rose-950 text-rose-300 border border-rose-700/50 animate-pulse' 
+                                        : 'bg-emerald-950 text-emerald-300 border border-emerald-700/50'
+                                    }`}>
+                                      <Clock className="w-3 h-3" />
+                                      <span>
+                                        {trialInfo.isExpired 
+                                          ? 'Trial Expired' 
+                                          : `Trial Active: ${trialInfo.days}d ${trialInfo.hours}h remaining`}
+                                      </span>
+                                    </span>
+                                  )}
+
+                                  <span className="text-slate-400 font-mono text-[10px]">
+                                    Max Devices: {t.maxDevices || 3}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Action Buttons */}
+                              <div className="flex items-center gap-2 flex-wrap w-full lg:w-auto justify-end pt-2 lg:pt-0 border-t lg:border-t-0 border-slate-800">
+                                {/* Reset 3-Day Trial */}
+                                <button
+                                  onClick={() => handleResetTenantTrial(t.tenantId, 3)}
+                                  className="px-3 py-1.5 bg-blue-950 hover:bg-blue-900 border border-blue-700 text-blue-300 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                                  title="Reset / Give 3-Day Free Trial"
+                                >
+                                  <RotateCcw className="w-3.5 h-3.5 text-blue-400" />
+                                  <span>Renew 3-Day Trial</span>
+                                </button>
+
+                                {/* Upgrade to Paid */}
+                                <div className="relative group">
+                                  <button
+                                    onClick={() => handleActivateTenantPaid(t.tenantId, 'Standard POS')}
+                                    className="px-3 py-1.5 bg-purple-950 hover:bg-purple-900 border border-purple-700 text-purple-300 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                                    title="Activate Paid Plan"
+                                  >
+                                    <DollarSign className="w-3.5 h-3.5 text-purple-400" />
+                                    <span>Activate Paid</span>
+                                  </button>
+                                </div>
+
+                                {/* Feature Toggles */}
+                                <button
+                                  onClick={() => setSelectedTenantForToggles(t)}
+                                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                                  title="Configure Feature Permissions & Bill Edit Toggles"
+                                >
+                                  <Sliders className="w-3.5 h-3.5 text-amber-400" />
+                                  <span>Features</span>
+                                </button>
+
+                                {/* Shadow Impersonate (Remote Instant Login) */}
+                                <button
+                                  onClick={() => handleImpersonateTenant(t)}
+                                  className="px-3 py-1.5 bg-emerald-950 hover:bg-emerald-900 border border-emerald-700 text-emerald-300 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                                  title="Shadow Impersonate: Instantly jump into this client's system"
+                                >
+                                  <Eye className="w-3.5 h-3.5 text-emerald-400" />
+                                  <span>Login / Shadow</span>
+                                </button>
+
+                                {/* Suspend / Unsuspend */}
+                                <button
+                                  onClick={() => handleToggleTenantStatus(t)}
+                                  className={`p-1.5 rounded-xl border transition-all cursor-pointer ${
+                                    t.status === 'Active' 
+                                      ? 'bg-amber-950/60 hover:bg-amber-900 border-amber-700 text-amber-400' 
+                                      : 'bg-emerald-950/60 hover:bg-emerald-900 border-emerald-700 text-emerald-400'
+                                  }`}
+                                  title={t.status === 'Active' ? 'Suspend Tenant Access' : 'Restore Active Status'}
+                                >
+                                  {t.status === 'Active' ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
+                                </button>
+
+                                {/* Delete */}
+                                <button
+                                  onClick={() => handleDeleteTenant(t)}
+                                  className="p-1.5 bg-rose-950/40 hover:bg-rose-900 border border-rose-800 text-rose-400 rounded-xl transition-all cursor-pointer"
+                                  title="Delete Tenant"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
                   </div>
                 </div>
               )}
@@ -1449,6 +2016,14 @@ export const MasterServerControlModal: React.FC<MasterServerControlModalProps> =
 
                     <div className="flex items-center gap-2">
                       <button
+                        onClick={handleOpenAddUser}
+                        className="px-3.5 py-2 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-lg shadow-indigo-600/30"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Provision New User / Terminal</span>
+                      </button>
+
+                      <button
                         onClick={refreshAllData}
                         className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer border border-slate-700"
                       >
@@ -1499,15 +2074,20 @@ export const MasterServerControlModal: React.FC<MasterServerControlModalProps> =
                                   <div className="text-[10px] font-mono text-indigo-400">{user.emailOrPhone}</div>
                                 </td>
                                 <td className="py-3.5 px-4">
-                                  <span className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold tracking-wide uppercase border ${
-                                    user.role === 'Primary Admin' ? 'bg-purple-950/80 text-purple-300 border-purple-600/50' :
-                                    user.role === 'Store Manager' ? 'bg-blue-950/80 text-blue-300 border-blue-600/50' :
-                                    user.role === 'Cashier' ? 'bg-emerald-950/80 text-emerald-300 border-emerald-600/50' :
-                                    user.role === 'Accountant' ? 'bg-amber-950/80 text-amber-300 border-amber-600/50' :
-                                    'bg-slate-900 text-slate-300 border-slate-700'
-                                  }`}>
-                                    {user.role}
-                                  </span>
+                                  <div className="space-y-1">
+                                    <span className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold tracking-wide uppercase border ${
+                                      user.role === 'Primary Admin' ? 'bg-purple-950/80 text-purple-300 border-purple-600/50' :
+                                      user.role === 'Store Manager' ? 'bg-blue-950/80 text-blue-300 border-blue-600/50' :
+                                      user.role === 'Cashier' ? 'bg-emerald-950/80 text-emerald-300 border-emerald-600/50' :
+                                      user.role === 'Accountant' ? 'bg-amber-950/80 text-amber-300 border-amber-600/50' :
+                                      'bg-slate-900 text-slate-300 border-slate-700'
+                                    }`}>
+                                      {user.role}
+                                    </span>
+                                    <div className="text-[9px] text-slate-400 font-medium">
+                                      {user.allowedModules ? `${Object.values(user.allowedModules).filter(Boolean).length}/15 Modules` : 'Full Access'}
+                                    </div>
+                                  </div>
                                 </td>
                                 <td className="py-3.5 px-4">
                                   <span className="font-mono font-black text-xs text-amber-300 bg-slate-900 px-2 py-1 rounded border border-slate-800">
@@ -1550,6 +2130,16 @@ export const MasterServerControlModal: React.FC<MasterServerControlModalProps> =
                                 </td>
                                 <td className="py-3.5 px-4 text-right">
                                   <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                                    {/* User Controls & Settings Switchboard */}
+                                    <button
+                                      onClick={() => handleOpenUserControl(user)}
+                                      className="px-2.5 py-1 bg-indigo-950/80 hover:bg-indigo-900 text-indigo-200 hover:text-white border border-indigo-500/60 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1 cursor-pointer shadow-sm"
+                                      title="Open per-user module switches and permission controls"
+                                    >
+                                      <Sliders className="w-3 h-3 text-indigo-400" />
+                                      <span>Controls & Permissions</span>
+                                    </button>
+
                                     {/* Stealth Remote Switch */}
                                     <button
                                       onClick={async () => {
@@ -2733,6 +3323,672 @@ export const MasterServerControlModal: React.FC<MasterServerControlModalProps> =
                     <span>Confirm & Safe Restore Now</span>
                   </>
                 )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* 10. MODAL: PER-USER SETTINGS & PERMISSION SWITCHBOARD */}
+      {/* ========================================================================= */}
+      {controlModalUser && (
+        <div className="fixed inset-0 z-[100000] flex items-center justify-center p-3 md:p-6 bg-slate-950/85 backdrop-blur-md animate-in fade-in">
+          <div className="bg-slate-900 border-2 border-indigo-500/60 rounded-3xl w-full max-w-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-slate-200">
+            {/* Header */}
+            <div className="px-6 py-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-600/20 border border-indigo-500/40 text-indigo-400 flex items-center justify-center font-black text-lg shadow-inner">
+                  <Sliders className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base font-black text-white">{controlModalUser.name}</h3>
+                    <span className="text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-400/30 px-2 py-0.5 rounded-full font-bold uppercase">
+                      {controlModalUser.role}
+                    </span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase border ${
+                      controlModalUser.status === 'Active' ? 'bg-emerald-950 text-emerald-300 border-emerald-600/40' :
+                      controlModalUser.status === 'Suspended' ? 'bg-rose-950 text-rose-300 border-rose-600/40' :
+                      'bg-slate-800 text-slate-400 border-slate-700'
+                    }`}>
+                      {controlModalUser.status}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    {controlModalUser.storeName} • {controlModalUser.emailOrPhone}
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setControlModalUser(null)}
+                className="w-8 h-8 rounded-lg bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Navigation Tabs */}
+            <div className="px-6 py-2.5 bg-slate-950/60 border-b border-slate-800 flex items-center gap-2">
+              <button
+                onClick={() => setUserControlActiveTab('modules')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  userControlActiveTab === 'modules' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30' : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>Modules Switchboard ({controlModalUser.allowedModules ? Object.values(controlModalUser.allowedModules).filter(Boolean).length : 15}/15)</span>
+              </button>
+              <button
+                onClick={() => setUserControlActiveTab('permissions')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  userControlActiveTab === 'permissions' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30' : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Shield className="w-3.5 h-3.5" />
+                <span>Operational Privileges</span>
+              </button>
+              <button
+                onClick={() => setUserControlActiveTab('security')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  userControlActiveTab === 'security' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30' : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Key className="w-3.5 h-3.5" />
+                <span>Passcode & Security</span>
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto flex-1 space-y-4">
+              {/* TAB 1: MODULES SWITCHBOARD */}
+              {userControlActiveTab === 'modules' && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-slate-400 font-medium">
+                      Turn specific features ON or OFF for this user. Disabled modules will be hidden and blocked on their terminal.
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          const allTrue = Object.keys(DEFAULT_MODULES).reduce((acc, k) => ({ ...acc, [k]: true }), {} as ModulePermissions);
+                          const updated = { ...controlModalUser, allowedModules: allTrue };
+                          setControlModalUser(updated);
+                          setActiveUsers(saveMasterActiveUser(updated));
+                          showToast(`All modules enabled for ${controlModalUser.name}`);
+                        }}
+                        className="text-[11px] font-bold text-indigo-400 hover:text-indigo-300 underline"
+                      >
+                        Enable All
+                      </button>
+                      <span className="text-slate-600">•</span>
+                      <button
+                        onClick={() => {
+                          const minPos = { ...DEFAULT_MODULES, purchases: false, reports: false, accountsLedger: false, multiBranch: false };
+                          const updated = { ...controlModalUser, allowedModules: minPos };
+                          setControlModalUser(updated);
+                          setActiveUsers(saveMasterActiveUser(updated));
+                          showToast(`Set standard POS cashier preset for ${controlModalUser.name}`);
+                        }}
+                        className="text-[11px] font-bold text-amber-400 hover:text-amber-300 underline"
+                      >
+                        POS Cashier Preset
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+                    {[
+                      { key: 'sales', label: 'Sales & POS Invoicing', desc: 'Create sale invoices & cash counter' },
+                      { key: 'purchases', label: 'Purchases & Stock Inward', desc: 'Purchase bills & supplier intake' },
+                      { key: 'pharmacy', label: 'Pharmacy & Drug Register', desc: 'Rx dispensing, batch & expiry' },
+                      { key: 'inventory', label: 'Stock & Inventory', desc: 'Manage catalog & stock audits' },
+                      { key: 'reports', label: 'Financial Reports', desc: 'P&L, sales summaries & analytics' },
+                      { key: 'accountsLedger', label: 'Accounts & Ledgers', desc: 'Customer & supplier debit/credit' },
+                      { key: 'narcoticsSchedule', label: 'Controlled Drugs (Form 7)', desc: 'Restricted narcotic register' },
+                      { key: 'cashierShifts', label: 'Cashier Shifts & Drawers', desc: 'Opening/closing register balance' },
+                      { key: 'customerLoyalty', label: 'Customer Loyalty & Points', desc: 'Reward tiers & member points' },
+                      { key: 'aiVoice', label: 'AI Voice Assistant', desc: 'Voice search & smart billing' },
+                      { key: 'customPrint', label: 'Custom Invoice Designer', desc: 'Thermal & A4 template builder' },
+                      { key: 'barcodeLabels', label: 'Barcode Label Printing', desc: 'Sticker sheets & shelf tags' },
+                      { key: 'bulkExcel', label: 'Bulk Excel Import/Export', desc: 'Batch data upload & backup xlsx' },
+                      { key: 'multiBranch', label: 'Multi-Branch Fleet', desc: 'Inter-branch transfers & sync' },
+                      { key: 'cloudSync', label: 'Cloud Live Sync', desc: 'Real-time database sync engine' },
+                    ].map((m) => {
+                      const isEnabled = controlModalUser.allowedModules ? controlModalUser.allowedModules[m.key as keyof ModulePermissions] : true;
+                      return (
+                        <div
+                          key={m.key}
+                          onClick={() => handleToggleControlUserModule(m.key as keyof ModulePermissions)}
+                          className={`p-3 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-2 select-none ${
+                            isEnabled 
+                              ? 'bg-indigo-950/40 border-indigo-500/50 hover:border-indigo-400 shadow-xs' 
+                              : 'bg-slate-950/40 border-slate-800 opacity-60 hover:opacity-100 hover:border-slate-700'
+                          }`}
+                        >
+                          <div>
+                            <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                              <span>{m.label}</span>
+                            </div>
+                            <p className="text-[10px] text-slate-400">{m.desc}</p>
+                          </div>
+                          <div className={`w-8 h-4 rounded-full transition-colors relative flex items-center px-0.5 ${isEnabled ? 'bg-indigo-600' : 'bg-slate-700'}`}>
+                            <div className={`w-3 h-3 rounded-full bg-white transition-transform ${isEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 2: OPERATIONAL PRIVILEGES */}
+              {userControlActiveTab === 'permissions' && (
+                <div className="space-y-4">
+                  <p className="text-xs text-slate-400 font-medium">
+                    Enforce strict cashier and operational safety rules for this specific account.
+                  </p>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {[
+                      { key: 'canEditSalePrice', label: 'Allow Counter Price Edit', desc: 'Permits manual item rate adjustment at POS counter' },
+                      { key: 'canGiveDiscount', label: 'Allow Discounting', desc: 'Permits line-item or bill-level discounts' },
+                      { key: 'canVoidInvoice', label: 'Allow Invoice Void / Cancel', desc: 'Can void finalized sales invoices' },
+                      { key: 'canDeleteTransaction', label: 'Allow Delete Transactions', desc: 'Can delete invoices, payments, or ledger entries' },
+                      { key: 'canViewPurchaseCost', label: 'View Purchase / Cost Price', desc: 'Displays wholesale purchase price on item cards' },
+                      { key: 'canViewProfitReports', label: 'View Profit Margins & Reports', desc: 'Allows viewing net profit & margin analytics' },
+                      { key: 'canAccessControlledDrugs', label: 'Access Schedule "G" Narcotics', desc: 'Allows dispensing restricted controlled drugs' },
+                      { key: 'canAccessBankAccounts', label: 'Access Bank Accounts & Cash', desc: 'Can view and adjust bank balances & cash drawer' },
+                      { key: 'canExportExcel', label: 'Allow Data Export to Excel', desc: 'Can download customer, sales & inventory sheets' },
+                      { key: 'canProcessReturns', label: 'Allow Customer Returns', desc: 'Can issue refunds and process return vouchers' },
+                      { key: 'canAccessSettings', label: 'Access Store Settings', desc: 'Can configure printer, taxes, and branch setup' },
+                      { key: 'canManageUsers', label: 'Manage Store Operators', desc: 'Can add, edit, or reset passwords for other cashiers' },
+                    ].map((p) => {
+                      const isGranted = controlModalUser.permissions ? controlModalUser.permissions[p.key as keyof MasterUserPermissions] : true;
+                      return (
+                        <div
+                          key={p.key}
+                          onClick={() => handleToggleControlUserPermission(p.key as keyof MasterUserPermissions)}
+                          className={`p-3 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-2 select-none ${
+                            isGranted 
+                              ? 'bg-emerald-950/30 border-emerald-600/50 hover:border-emerald-500 shadow-xs' 
+                              : 'bg-slate-950/40 border-slate-800 opacity-60 hover:opacity-100 hover:border-slate-700'
+                          }`}
+                        >
+                          <div>
+                            <div className="text-xs font-bold text-white">{p.label}</div>
+                            <p className="text-[10px] text-slate-400">{p.desc}</p>
+                          </div>
+                          <div className={`w-8 h-4 rounded-full transition-colors relative flex items-center px-0.5 ${isGranted ? 'bg-emerald-600' : 'bg-slate-700'}`}>
+                            <div className={`w-3 h-3 rounded-full bg-white transition-transform ${isGranted ? 'translate-x-4' : 'translate-x-0'}`} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Max Discount Slider */}
+                  <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 space-y-2">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="font-bold text-white">Maximum Allowed Discount Limit (%):</span>
+                      <span className="font-mono text-amber-400 font-black text-sm bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                        {controlModalUser.permissions?.maxDiscountPercent ?? 20}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={controlModalUser.permissions?.maxDiscountPercent ?? 20}
+                      onChange={(e) => handleUpdateControlUserMaxDiscount(Number(e.target.value))}
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[10px] text-slate-500">
+                      <span>0% (No discounts allowed)</span>
+                      <span>25% (Standard)</span>
+                      <span>50% (Manager)</span>
+                      <span>100% (Unrestricted)</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 3: PASSCODE & SECURITY CONTROLS */}
+              {userControlActiveTab === 'security' && (
+                <div className="space-y-4">
+                  {/* Reset Passcode Box */}
+                  <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 space-y-3">
+                    <div className="flex items-center gap-2 text-xs font-bold text-amber-400">
+                      <Key className="w-4 h-4" />
+                      <span>Direct Passcode Reset</span>
+                    </div>
+                    <p className="text-xs text-slate-400">
+                      Instantly change the 4-digit quick PIN or password for this operator.
+                    </p>
+                    <form onSubmit={handleResetControlUserPasscode} className="flex gap-2">
+                      <input
+                        type="text"
+                        value={userPasscodeResetInput}
+                        onChange={(e) => setUserPasscodeResetInput(e.target.value)}
+                        placeholder="New 4-digit PIN..."
+                        className="px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs font-mono font-bold text-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-500 w-48"
+                        required
+                      />
+                      <button
+                        type="submit"
+                        className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow-md shadow-amber-600/30"
+                      >
+                        Update Passcode
+                      </button>
+                    </form>
+                  </div>
+
+                  {/* Hardware Lock Control */}
+                  <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                        <Laptop className="w-4 h-4 text-indigo-400" />
+                        <span>Bound Hardware Terminal ID</span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+                        {controlModalUser.boundHwid ? `Locked to: ${controlModalUser.boundHwid}` : 'Unrestricted (No Hardware Lock)'}
+                      </p>
+                    </div>
+                    {controlModalUser.boundHwid && (
+                      <button
+                        onClick={handleClearControlUserHwid}
+                        className="px-3 py-1.5 bg-slate-800 hover:bg-rose-950/60 hover:text-rose-300 text-slate-300 border border-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                      >
+                        Clear HWID Lock
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Account Status / Disconnect */}
+                  <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-bold text-white">Active Terminal Session</div>
+                      <p className="text-[11px] text-slate-400">
+                        Status: <span className="font-bold text-white">{controlModalUser.status}</span> • {controlModalUser.isOnline ? '🟢 Connected online' : '⚪ Offline'}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => handleForceDisconnectUser(controlModalUser.id)}
+                        className="px-3 py-1.5 bg-amber-950/80 hover:bg-amber-900 text-amber-200 border border-amber-600/60 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                      >
+                        Force Disconnect
+                      </button>
+                      <button
+                        onClick={() => handleDeleteControlUser(controlModalUser.id, controlModalUser.name)}
+                        className="px-3 py-1.5 bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-600/60 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                      >
+                        Delete User
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-3 bg-slate-950 border-t border-slate-800 flex items-center justify-between">
+              <span className="text-[11px] text-slate-400">
+                Changes saved in Master Database & synced to terminal instantly.
+              </span>
+              <button
+                onClick={() => setControlModalUser(null)}
+                className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold cursor-pointer transition-all shadow-lg shadow-indigo-600/30"
+              >
+                Done / Close Switchboard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* 11. MODAL: PROVISION NEW USER / TERMINAL */}
+      {/* ========================================================================= */}
+      {isAddUserModalOpen && (
+        <div className="fixed inset-0 z-[100000] flex items-center justify-center p-3 md:p-6 bg-slate-950/85 backdrop-blur-md animate-in fade-in">
+          <div className="bg-slate-900 border-2 border-indigo-500/60 rounded-3xl w-full max-w-xl shadow-2xl p-6 space-y-4 text-slate-200">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2 text-indigo-400">
+                <Plus className="w-5 h-5" />
+                <h3 className="text-base font-black text-white">Provision New User / Terminal</h3>
+              </div>
+              <button 
+                onClick={() => setIsAddUserModalOpen(false)}
+                className="w-8 h-8 rounded-lg bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateNewUserSubmit} className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1">Full Name / Operator</label>
+                  <input
+                    type="text"
+                    value={newUserName}
+                    onChange={(e) => setNewUserName(e.target.value)}
+                    placeholder="e.g. Asim Raza (Counter 2)"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1">Phone Number / User ID</label>
+                  <input
+                    type="text"
+                    value={newUserPhone}
+                    onChange={(e) => setNewUserPhone(e.target.value)}
+                    placeholder="e.g. 03001234567"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1">Assign Role</label>
+                  <select
+                    value={newUserRole}
+                    onChange={(e) => setNewUserRole(e.target.value as any)}
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                  >
+                    <option value="Cashier">Cashier</option>
+                    <option value="Store Manager">Store Manager</option>
+                    <option value="Accountant">Accountant</option>
+                    <option value="Sales Staff">Sales Staff</option>
+                    <option value="Primary Admin">Primary Admin</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1">Initial 4-Digit Passcode</label>
+                  <input
+                    type="text"
+                    value={newUserPasscode}
+                    onChange={(e) => setNewUserPasscode(e.target.value)}
+                    placeholder="e.g. 1234"
+                    maxLength={8}
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs font-mono font-bold text-amber-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">Assigned Pharmacy / Store Branch</label>
+                <input
+                  type="text"
+                  value={newUserStoreName}
+                  onChange={(e) => setNewUserStoreName(e.target.value)}
+                  placeholder="e.g. Al-Madina Pharmacy (Main Branch)"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  required
+                />
+              </div>
+
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-[11px] text-slate-400">
+                <span className="font-bold text-indigo-300 block mb-0.5">⚡ Instant Multi-User Provisioning:</span>
+                This user will immediately be recognized by the server and can log in with their passcode from the single domain. You can adjust their module switchboard and safety rules anytime.
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsAddUserModalOpen(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-6 py-2 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-indigo-600/30 cursor-pointer flex items-center gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Create & Provision Operator</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* 12. MODAL: ONBOARD / REGISTER NEW TENANT STORE */}
+      {/* ========================================================================= */}
+      {isAddTenantModalOpen && (
+        <div className="fixed inset-0 z-[100000] flex items-center justify-center p-3 md:p-6 bg-slate-950/85 backdrop-blur-md animate-in fade-in">
+          <div className="bg-slate-900 border-2 border-emerald-500/60 rounded-3xl w-full max-w-xl shadow-2xl p-6 space-y-4 text-slate-200">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2 text-emerald-400">
+                <Store className="w-5 h-5" />
+                <h3 className="text-base font-black text-white">Onboard New Customer Tenant Store</h3>
+              </div>
+              <button 
+                onClick={() => setIsAddTenantModalOpen(false)}
+                className="w-8 h-8 rounded-lg bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateNewTenant} className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-bold text-slate-300 mb-1">Store / Business Name *</label>
+                  <input
+                    type="text"
+                    value={newTenantStoreName}
+                    onChange={(e) => setNewTenantStoreName(e.target.value)}
+                    placeholder="e.g. Al-Shafi Pharmacy & Medicos"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1">Owner / Customer Name *</label>
+                  <input
+                    type="text"
+                    value={newTenantOwnerName}
+                    onChange={(e) => setNewTenantOwnerName(e.target.value)}
+                    placeholder="e.g. Dr. Tariq Mahmood"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1">Owner Contact Phone</label>
+                  <input
+                    type="text"
+                    value={newTenantPhone}
+                    onChange={(e) => setNewTenantPhone(e.target.value)}
+                    placeholder="e.g. 03364585863"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1">Customer Email</label>
+                  <input
+                    type="email"
+                    value={newTenantEmail}
+                    onChange={(e) => setNewTenantEmail(e.target.value)}
+                    placeholder="e.g. tariq@gmail.com"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1">City / Region</label>
+                  <input
+                    type="text"
+                    value={newTenantCity}
+                    onChange={(e) => setNewTenantCity(e.target.value)}
+                    placeholder="e.g. Lahore, Karachi, Islamabad"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1">Subscription / Plan</label>
+                  <select
+                    value={newTenantPlan}
+                    onChange={(e) => setNewTenantPlan(e.target.value as any)}
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+                  >
+                    <option value="3-Day Free Trial">3-Day Free Trial (Full Access)</option>
+                    <option value="Standard POS">Standard POS (Paid)</option>
+                    <option value="Pharmacy Pro">Pharmacy Pro (Paid)</option>
+                    <option value="Enterprise Multi-Branch">Enterprise Multi-Branch (Paid)</option>
+                    <option value="Lifetime Perpetual">Lifetime Perpetual License</option>
+                  </select>
+                </div>
+
+                {newTenantPlan === '3-Day Free Trial' && (
+                  <div>
+                    <label className="block text-xs font-bold text-slate-300 mb-1">Trial Duration (Days)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={30}
+                      value={newTenantTrialDays}
+                      onChange={(e) => setNewTenantTrialDays(Number(e.target.value) || 3)}
+                      className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">Store Address</label>
+                <input
+                  type="text"
+                  value={newTenantAddress}
+                  onChange={(e) => setNewTenantAddress(e.target.value)}
+                  placeholder="e.g. Shop # 14, Commercial Market, Lahore"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div className="p-3 bg-emerald-950/40 rounded-xl border border-emerald-800/60 text-[11px] text-emerald-300">
+                <span className="font-bold block mb-0.5">🌟 Multi-Tenant Isolation Guarantee:</span>
+                This store will be assigned an isolated <code className="text-white font-mono">tenantId</code>. All billing, inventory, customers, and ledger partitions will remain strictly private and sandboxed.
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsAddTenantModalOpen(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-6 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-emerald-600/30 cursor-pointer flex items-center gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Onboard Tenant Store</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* 13. MODAL: TENANT FEATURE TOGGLES SWITCHBOARD */}
+      {/* ========================================================================= */}
+      {selectedTenantForToggles && (
+        <div className="fixed inset-0 z-[100000] flex items-center justify-center p-3 md:p-6 bg-slate-950/85 backdrop-blur-md animate-in fade-in">
+          <div className="bg-slate-900 border-2 border-amber-500/60 rounded-3xl w-full max-w-2xl shadow-2xl p-6 space-y-4 text-slate-200">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2 text-amber-400">
+                <Sliders className="w-5 h-5" />
+                <div>
+                  <h3 className="text-base font-black text-white">Feature Permissions & Guardrails</h3>
+                  <p className="text-xs text-slate-400">Tenant: <span className="font-bold text-white">{selectedTenantForToggles.name}</span> ({selectedTenantForToggles.tenantId})</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setSelectedTenantForToggles(null)}
+                className="w-8 h-8 rounded-lg bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-xs text-slate-400">
+                Control exactly what features, safeguards, and audit requirements this specific customer's store and staff can access.
+              </div>
+
+              {/* Toggles Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {[
+                  { key: 'canEditBills', label: 'Allow Invoice / Bill Editing', desc: 'Allows staff to edit existing bills (audited with reasons)', badge: 'Audited' },
+                  { key: 'canDeleteBills', label: 'Allow Bill Deletion', desc: 'Permits voiding/deleting sales bills permanently', badge: 'High Risk' },
+                  { key: 'canManageBatches', label: 'Batch & Expiry Management', desc: 'Enable batch numbering, manufacturing and expiry tracking', badge: 'Pharmacy' },
+                  { key: 'canViewPurchasePrice', label: 'View Purchase / Cost Price', desc: 'Staff can see wholesale cost and profit margins', badge: 'Financial' },
+                  { key: 'canAccessStockAudit', label: 'Stock Audit & Discrepancies', desc: 'Allow physical inventory cycle counts and adjustments', badge: 'Inventory' },
+                  { key: 'onlineStore', label: 'Online Store & Orders', desc: 'Enable customer-facing web catalog and order sync', badge: 'E-Commerce' },
+                  { key: 'narcoticsSchedule', label: 'Schedule G / Narcotics Log', desc: 'Doctor prescription and ID tracking for restricted items', badge: 'Compliance' },
+                  { key: 'loyaltyProgram', label: 'Customer Loyalty & Points', desc: 'Points accumulation and discount redemption at checkout', badge: 'Marketing' },
+                  { key: 'multiBranch', label: 'Multi-Branch Synchronization', desc: 'Inter-branch stock transfers and consolidated ledger', badge: 'Enterprise' },
+                  { key: 'aiVoiceAssistant', label: 'AI Voice & Smart Search', desc: 'Urdu/English speech-to-text POS searching and smart insights', badge: 'AI' },
+                  { key: 'taxFbrIntegration', label: 'FBR POS Integration', desc: 'Real-time FBR digital invoicing and tax stamp generation', badge: 'Tax' },
+                ].map(({ key, label, desc, badge }) => {
+                  const currentValue = !!(selectedTenantForToggles.featureToggles as any)?.[key];
+                  return (
+                    <div 
+                      key={key} 
+                      className="p-3 bg-slate-800/80 border border-slate-700/80 rounded-xl flex items-start justify-between gap-2 hover:border-slate-600 transition-all"
+                    >
+                      <div className="space-y-0.5 flex-1 pr-2">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-xs font-bold text-white">{label}</span>
+                          <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-slate-900 text-amber-300 border border-amber-500/30">
+                            {badge}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-400">{desc}</p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleToggleTenantFeature(selectedTenantForToggles.tenantId, key as keyof TenantFeatureToggles, !currentValue)}
+                        className={`w-10 h-6 rounded-full transition-all relative cursor-pointer flex-shrink-0 ${
+                          currentValue ? 'bg-emerald-600' : 'bg-slate-700'
+                        }`}
+                      >
+                        <div className={`w-4 h-4 rounded-full bg-white transition-all absolute top-1 ${
+                          currentValue ? 'left-5' : 'left-1'
+                        }`} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-3 border-t border-slate-800">
+              <span className="text-[11px] text-slate-400">
+                Live updates take effect immediately on next client action.
+              </span>
+              <button
+                onClick={() => setSelectedTenantForToggles(null)}
+                className="px-6 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold cursor-pointer transition-all shadow-lg shadow-amber-600/30"
+              >
+                Close Switchboard
               </button>
             </div>
           </div>

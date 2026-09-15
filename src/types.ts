@@ -1,13 +1,126 @@
 export type UserRole = 
   | 'Primary Admin'
   | 'Secondary Admin'
-  | 'Salesman'
+  | 'Admin'
+  | 'Store Manager'
+  | 'Manager'
+  | 'Pharmacist'
+  | 'Cashier'
   | 'Biller'
+  | 'Sales Staff'
+  | 'Salesman'
+  | 'Staff'
   | 'Biller and Salesman'
+  | 'Accountant'
   | 'CA/Accountant'
-  | 'Stock Keeper';
+  | 'Stock Keeper'
+  | 'Inventory Manager'
+  | 'Sales User'
+  | 'Purchase User'
+  | 'Viewer'
+  | 'Custom Role';
 
-export type Role = UserRole | 'Admin' | 'Pharmacist' | 'Cashier';
+export type Role = UserRole;
+
+export interface TenantFeatureToggles {
+  sales: boolean;
+  billing: boolean;
+  purchases: boolean;
+  inventory: boolean;
+  customers: boolean;
+  suppliers: boolean;
+  ledgers: boolean;
+  expenses: boolean;
+  cashAndBank: boolean;
+  reports: boolean;
+  profitAndLoss: boolean;
+  batchManagement: boolean;
+  expiryManagement: boolean;
+  barcode: boolean;
+  warranty: boolean;
+  onlineStore: boolean;
+  advancedReports: boolean;
+  multipleWarehouses: boolean;
+  dataExport: boolean;
+  backupAndRestore: boolean;
+  aiVoice: boolean;
+}
+
+export const DEFAULT_TENANT_FEATURE_TOGGLES: TenantFeatureToggles = {
+  sales: true,
+  billing: true,
+  purchases: true,
+  inventory: true,
+  customers: true,
+  suppliers: true,
+  ledgers: true,
+  expenses: true,
+  cashAndBank: true,
+  reports: true,
+  profitAndLoss: true,
+  batchManagement: true,
+  expiryManagement: true,
+  barcode: true,
+  warranty: true,
+  onlineStore: true,
+  advancedReports: true,
+  multipleWarehouses: true,
+  dataExport: true,
+  backupAndRestore: true,
+  aiVoice: true,
+};
+
+export interface Tenant {
+  id: string; // tenantId
+  tenantId: string;
+  organizationId: string;
+  licenseId: string;
+  name: string; // Store / Pharmacy Name
+  ownerName: string;
+  ownerEmail: string;
+  ownerPhone: string;
+  city?: string;
+  address?: string;
+  plan: 'Trial (3 Days)' | 'Trial (15 Days)' | 'Standard POS' | 'Pharmacy Pro' | 'Enterprise Multi-Branch' | 'Lifetime Perpetual';
+  status: 'Active' | 'Suspended' | 'Expired' | 'Trial';
+  primaryAdminId: string;
+  primaryAdminEmail: string;
+  trialStartDate: string;
+  trialExpiryDate: string;
+  isTrialActive: boolean;
+  trialExpired: boolean;
+  paidLicenseActive: boolean;
+  maxDevices: number;
+  featureToggles: TenantFeatureToggles;
+  totalMembersCount?: number;
+  totalInvoicesCount?: number;
+  totalProductsCount?: number;
+  totalPartiesCount?: number;
+  lastLoginAt?: string;
+  lastSyncAt?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InvoiceEditAuditRecord {
+  id: string;
+  tenantId?: string;
+  invoiceId: string;
+  invoiceNumber: string;
+  editorId: string;
+  editorName: string;
+  editorRole: string;
+  timestamp: string | number;
+  reason: string;
+  originalGrandTotal: number;
+  newGrandTotal: number;
+  originalItemsCount: number;
+  newItemsCount: number;
+  changesSummary: string;
+  originalSnapshot?: any;
+  updatedSnapshot?: any;
+}
 
 export interface DashboardLayoutPreferences {
   viewMode?: 'split' | 'grid';
@@ -21,12 +134,17 @@ export interface DashboardLayoutPreferences {
 
 export interface AppUserRecord {
   id: string;
+  tenantId?: string;
   name: string;
   emailOrPhone: string;
+  email?: string;
   role: UserRole;
   status: 'Joined' | 'Pending' | 'Inactive';
   passcode?: string;
   notes?: string;
+  canEditInvoices?: boolean;
+  canDeleteInvoices?: boolean;
+  canReprintInvoices?: boolean;
   lastActive?: string;
   dashboardPreferences?: DashboardLayoutPreferences;
   createdAt?: string;
@@ -35,17 +153,19 @@ export interface AppUserRecord {
 
 export interface UserActivityLog {
   id: string;
+  tenantId?: string;
   userId?: string;
   userName: string;
   userRole: UserRole;
   action?: string;
-  module?: 'Sale' | 'Purchase' | 'Inventory' | 'Cash & Bank' | 'Reports' | 'Users' | 'Settings' | 'Auth' | 'Backup/Restore' | 'Sync & Share';
+  module?: 'Sale' | 'Purchase' | 'Inventory' | 'Cash & Bank' | 'Reports' | 'Users' | 'Settings' | 'Auth' | 'Backup/Restore' | 'Sync & Share' | 'Master Control';
   details: string;
   timestamp: string | number;
 }
 
 export interface User {
   id: string; // uid from firebase
+  tenantId?: string;
   uid?: string;
   email?: string;
   name?: string;

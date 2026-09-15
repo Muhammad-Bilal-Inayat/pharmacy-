@@ -22,11 +22,13 @@ import { SafetyRulesTab } from '../components/settings/SafetyRulesTab';
 import { ControlledAndGenericTab } from '../components/settings/ControlledAndGenericTab';
 import { DemoDataTab } from '../components/settings/DemoDataTab';
 import { SystemHealthTab } from '../components/settings/SystemHealthTab';
+import { AdminSettingsTab } from '../components/settings/AdminSettingsTab';
 import { useSettings } from '../contexts/SettingsContext';
 import { generateSeedData } from '../lib/seedData';
 
 export type TabKey = 
   | 'GENERAL' 
+  | 'ADMIN SETTINGS'
   | 'SYSTEM HEALTH & SYNC' 
   | 'CONTROLLED & GENERIC' 
   | 'FEATURE FLAGS' 
@@ -51,6 +53,7 @@ export interface TabItem {
 
 export const SETTINGS_TABS: TabItem[] = [
   { key: 'GENERAL', label: 'GENERAL', icon: Sliders },
+  { key: 'ADMIN SETTINGS', label: 'ADMIN SETTINGS & FLAGS', icon: ShieldCheck, badge: 'ADMIN' },
   { key: 'SYSTEM HEALTH & SYNC', label: 'SYSTEM HEALTH & SYNC', icon: Database, badge: 'HEALTH' },
   { key: 'CONTROLLED & GENERIC', label: 'CONTROLLED & GENERIC SUITE', icon: ShieldCheck },
   { key: 'FEATURE FLAGS', label: 'FEATURE FLAGS (19)', icon: Sparkles },
@@ -83,6 +86,7 @@ export const resolveTabKey = (param?: string | null): TabKey => {
   // 3. Match normalized key or slug (remove special chars & spaces)
   const normalized = upper.replace(/[^A-Z0-9]/g, '');
 
+  if (normalized.includes('ADMINSETTING') || normalized.includes('ADMINFLAG')) return 'ADMIN SETTINGS';
   if (normalized.includes('HEALTH') || normalized.includes('SYNC')) return 'SYSTEM HEALTH & SYNC';
   if (normalized.includes('CONTROLLED') || normalized.includes('GENERIC')) return 'CONTROLLED & GENERIC';
   if (normalized.includes('FEATURE') || normalized.includes('FLAG')) return 'FEATURE FLAGS';
@@ -215,6 +219,7 @@ export const Settings: React.FC = () => {
       <main className="flex-1 min-w-0 overflow-y-auto bg-[#f8fafc] p-4 sm:p-6">
         <div className="max-w-6xl mx-auto">
           {activeTab === 'GENERAL' && <GeneralTab />}
+          {activeTab === 'ADMIN SETTINGS' && <AdminSettingsTab />}
           {activeTab === 'SYSTEM HEALTH & SYNC' && <SystemHealthTab />}
           {activeTab === 'CONTROLLED & GENERIC' && <ControlledAndGenericTab />}
           {activeTab === 'FEATURE FLAGS' && <FeatureFlagsTab />}

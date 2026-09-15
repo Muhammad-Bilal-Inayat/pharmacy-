@@ -1,12 +1,11 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
-import { createServer as createViteServer } from 'vite';
 
 async function startServer() {
   const app = express();
-  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
-  const HOST = process.env.HOST || '0.0.0.0';
+  const PORT = 3000;
+  const HOST = '0.0.0.0';
   const syncFile = path.resolve(process.cwd(), '.sync_data.json');
 
   // Security Hardening: Disable information disclosure
@@ -200,8 +199,10 @@ async function startServer() {
   // ==========================================
   // MASTER SERVER CONTROL & LICENSE API GATEWAY
   // ==========================================
+  const masterUsersFile = path.resolve(process.cwd(), '.master_users.json');
   const masterLicensesFile = path.resolve(process.cwd(), '.master_licenses.json');
   const masterHeartbeatsFile = path.resolve(process.cwd(), '.master_heartbeats.json');
+  const masterAuditLogsFile = path.resolve(process.cwd(), '.master_audit_logs.json');
   const masterBackupsDir = path.resolve(process.cwd(), '.master_client_backups');
 
   if (!fs.existsSync(masterBackupsDir)) {
@@ -209,6 +210,269 @@ async function startServer() {
       fs.mkdirSync(masterBackupsDir, { recursive: true });
     } catch (e) {}
   }
+
+  // Helper function to read/write JSON files safely
+  function readJsonFile<T>(filePath: string, fallback: T): T {
+    try {
+      if (fs.existsSync(filePath)) {
+        return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      }
+    } catch (e) {}
+    return fallback;
+  }
+
+  function writeJsonFile(filePath: string, data: any): void {
+    try {
+      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+    } catch (e) {}
+  }
+
+  // Log audit action on the server
+  function logServerAudit(action: string, category: string, details: string, targetClient?: string) {
+    try {
+      const logs = readJsonFile<any[]>(masterAuditLogsFile, []);
+      logs.unshift({
+        id: 'srv_audit_' + Date.now(),
+        timestamp: new Date().toISOString(),
+        action,
+        category,
+        details,
+        targetClient
+      });
+      writeJsonFile(masterAuditLogsFile, logs.slice(0, 500));
+    } catch (e) {}
+  }
+
+  // --- 1. MASTER USERS API ---
+  app.get('/api/master/users', (req, res) => {
+    try {
+      const users = readJsonFile<any[]>(masterUsersFile, []);
+      res.json({ success: true, users });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.post('/api/master/users', (req, res) => {
+    try {
+      const user = req.body;
+      if (!user || !user.id) {
+        return res.status(400).json({ success: false, message: 'User ID required' });
+      }
+      const users = readJsonFile<any[]>(masterUsersFile, []);
+      const idx = users.findIndex(u => u.id === user.id);
+      user.updatedAt = new Date().toISOString();
+      if (idx >= 0) {
+        users[idx] = { ...users[idx], ...user };
+      } else {
+        users.unshift(user);
+      }
+      writeJsonFile(masterUsersFile, users);
+      logServerAudit('User Saved', 'SECURITY', `Updated/Created user ${user.name} (${user.role})`, user.storeName);
+      res.json({ success: true, user, users });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.put('/api/master/users/:id/status', (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status } = req.body;
+      const users = readJsonFile<any[]>(masterUsersFile, []);
+      const idx = users.findIndex(u => u.id === id);
+      if (idx >= 0) {
+        users[idx].status = status;
+        users[idx].isOnline = status === 'Active';
+        users[idx].updatedAt = new Date().toISOString();
+        writeJsonFile(masterUsersFile, users);
+        logServerAudit('User Status Changed', 'SECURITY', `User ${users[idx].name} status changed to ${status}`, users[idx].storeName);
+        return res.json({ success: true, user: users[idx], users });
+      }
+      res.status(404).json({ success: false, message: 'User not found' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.put('/api/master/users/:id/modules', (req, res) => {
+    try {
+      const { id } = req.params;
+      const { allowedModules } = req.body;
+      const users = readJsonFile<any[]>(masterUsersFile, []);
+      const idx = users.findIndex(u => u.id === id);
+      if (idx >= 0) {
+        users[idx].allowedModules = { ...(users[idx].allowedModules || {}), ...allowedModules };
+        users[idx].updatedAt = new Date().toISOString();
+        writeJsonFile(masterUsersFile, users);
+        logServerAudit('User Modules Updated', 'SECURITY', `Updated allowed modules for ${users[idx].name}`, users[idx].storeName);
+        return res.json({ success: true, user: users[idx] });
+      }
+      res.status(404).json({ success: false, message: 'User not found' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.put('/api/master/users/:id/permissions', (req, res) => {
+    try {
+      const { id } = req.params;
+      const { permissions } = req.body;
+      const users = readJsonFile<any[]>(masterUsersFile, []);
+      const idx = users.findIndex(u => u.id === id);
+      if (idx >= 0) {
+        users[idx].permissions = { ...(users[idx].permissions || {}), ...permissions };
+        users[idx].updatedAt = new Date().toISOString();
+        writeJsonFile(masterUsersFile, users);
+        logServerAudit('User Permissions Updated', 'SECURITY', `Updated permissions matrix for ${users[idx].name}`, users[idx].storeName);
+        return res.json({ success: true, user: users[idx] });
+      }
+      res.status(404).json({ success: false, message: 'User not found' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.put('/api/master/users/:id/settings', (req, res) => {
+    try {
+      const { id } = req.params;
+      const { settings } = req.body;
+      const users = readJsonFile<any[]>(masterUsersFile, []);
+      const idx = users.findIndex(u => u.id === id);
+      if (idx >= 0) {
+        users[idx].customSettingsOverrides = { ...(users[idx].customSettingsOverrides || {}), ...settings };
+        users[idx].updatedAt = new Date().toISOString();
+        writeJsonFile(masterUsersFile, users);
+        logServerAudit('User Settings Overridden', 'SECURITY', `Custom settings updated for ${users[idx].name}`, users[idx].storeName);
+        return res.json({ success: true, user: users[idx] });
+      }
+      res.status(404).json({ success: false, message: 'User not found' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.put('/api/master/users/:id/passcode', (req, res) => {
+    try {
+      const { id } = req.params;
+      const { passcode } = req.body;
+      const users = readJsonFile<any[]>(masterUsersFile, []);
+      const idx = users.findIndex(u => u.id === id);
+      if (idx >= 0) {
+        users[idx].passcode = passcode;
+        users[idx].updatedAt = new Date().toISOString();
+        writeJsonFile(masterUsersFile, users);
+        logServerAudit('Passcode Reset', 'SECURITY', `Reset passcode for user ${users[idx].name}`, users[idx].storeName);
+        return res.json({ success: true, message: 'Passcode updated successfully' });
+      }
+      res.status(404).json({ success: false, message: 'User not found' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.delete('/api/master/users/:id', (req, res) => {
+    try {
+      const { id } = req.params;
+      let users = readJsonFile<any[]>(masterUsersFile, []);
+      const target = users.find(u => u.id === id);
+      users = users.filter(u => u.id !== id);
+      writeJsonFile(masterUsersFile, users);
+      if (target) {
+        logServerAudit('User Deleted', 'SECURITY', `Deleted user account ${target.name}`, target.storeName);
+      }
+      res.json({ success: true, users });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.post('/api/master/users/:id/disconnect', (req, res) => {
+    try {
+      const { id } = req.params;
+      const users = readJsonFile<any[]>(masterUsersFile, []);
+      const idx = users.findIndex(u => u.id === id);
+      if (idx >= 0) {
+        users[idx].status = 'Disconnected';
+        users[idx].isOnline = false;
+        users[idx].updatedAt = new Date().toISOString();
+        writeJsonFile(masterUsersFile, users);
+        logServerAudit('User Disconnected', 'SECURITY', `Force disconnected terminal for ${users[idx].name}`, users[idx].storeName);
+        return res.json({ success: true, message: `User ${users[idx].name} disconnected`, users });
+      }
+      res.status(404).json({ success: false, message: 'User not found' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  // --- 2. MASTER LICENSES API ---
+  app.get('/api/master/licenses', (req, res) => {
+    try {
+      const licenses = readJsonFile<any[]>(masterLicensesFile, []);
+      res.json({ success: true, licenses });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.post('/api/master/licenses', (req, res) => {
+    try {
+      const license = req.body;
+      if (!license || !license.licenseKey) {
+        return res.status(400).json({ success: false, message: 'License key required' });
+      }
+      const licenses = readJsonFile<any[]>(masterLicensesFile, []);
+      const idx = licenses.findIndex(l => l.id === license.id || l.licenseKey === license.licenseKey);
+      license.updatedAt = new Date().toISOString();
+      if (idx >= 0) {
+        licenses[idx] = { ...licenses[idx], ...license };
+      } else {
+        licenses.unshift(license);
+      }
+      writeJsonFile(masterLicensesFile, licenses);
+      logServerAudit('License Saved', 'LICENSE', `Saved license ${license.licenseKey} for ${license.clientName}`, license.clientName);
+      res.json({ success: true, license, licenses });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.delete('/api/master/licenses/:id', (req, res) => {
+    try {
+      const { id } = req.params;
+      let licenses = readJsonFile<any[]>(masterLicensesFile, []);
+      const target = licenses.find(l => l.id === id);
+      licenses = licenses.filter(l => l.id !== id);
+      writeJsonFile(masterLicensesFile, licenses);
+      if (target) {
+        logServerAudit('License Deleted', 'LICENSE', `Deleted license ${target.licenseKey} (${target.clientName})`, target.clientName);
+      }
+      res.json({ success: true, licenses });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  // --- 3. MASTER AUDIT LOGS API ---
+  app.get('/api/master/audit-logs', (req, res) => {
+    try {
+      const logs = readJsonFile<any[]>(masterAuditLogsFile, []);
+      res.json({ success: true, logs });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.post('/api/master/audit-logs', (req, res) => {
+    try {
+      const { action, category, details, targetClient } = req.body;
+      logServerAudit(action, category, details, targetClient);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
 
   // 1. License Check / Verify Endpoint (For client software instances)
   app.get('/api/master/license/verify', (req, res) => {

@@ -1,5 +1,6 @@
 import { hashPassword, generateTOTPSecret, generateEmergencyBackupCodes, verifyTOTPToken } from './totpService';
 import { v4 as uuidv4 } from 'uuid';
+import { Tenant, TenantFeatureToggles, DEFAULT_TENANT_FEATURE_TOGGLES } from '../types';
 
 export interface ModulePermissions {
   sales: boolean;
@@ -40,6 +41,40 @@ export interface ClientLicense {
   updatedAt: string;
 }
 
+export interface MasterUserPermissions {
+  canEditSalePrice: boolean;
+  canGiveDiscount: boolean;
+  maxDiscountPercent: number;
+  canVoidInvoice: boolean;
+  canDeleteTransaction: boolean;
+  canViewPurchaseCost: boolean;
+  canViewProfitReports: boolean;
+  canAccessControlledDrugs: boolean;
+  canExportExcel: boolean;
+  canManageUsers: boolean;
+  canAccessSettings: boolean;
+  canProcessReturns: boolean;
+  canAccessBankAccounts: boolean;
+  canChangePaymentTerms: boolean;
+}
+
+export const DEFAULT_USER_PERMISSIONS: MasterUserPermissions = {
+  canEditSalePrice: true,
+  canGiveDiscount: true,
+  maxDiscountPercent: 25,
+  canVoidInvoice: false,
+  canDeleteTransaction: false,
+  canViewPurchaseCost: true,
+  canViewProfitReports: true,
+  canAccessControlledDrugs: true,
+  canExportExcel: true,
+  canManageUsers: false,
+  canAccessSettings: true,
+  canProcessReturns: true,
+  canAccessBankAccounts: true,
+  canChangePaymentTerms: true,
+};
+
 export interface MasterActiveUser {
   id: string;
   name: string;
@@ -55,6 +90,11 @@ export interface MasterActiveUser {
   totalTransactions?: number;
   sessionDurationMinutes?: number;
   totalActiveHours?: number;
+  allowedModules?: ModulePermissions;
+  permissions?: MasterUserPermissions;
+  customSettingsOverrides?: Record<string, any>;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface ClientInstanceHeartbeat {
@@ -131,6 +171,7 @@ const MASTER_INSTANCES_KEY = 'mbi_master_client_instances_v3';
 const MASTER_BACKUPS_KEY = 'mbi_master_client_backups_v3';
 const MASTER_SESSION_KEY = 'mbi_master_active_session_v3';
 const MASTER_AUDIT_KEY = 'mbi_master_audit_logs_v3';
+const MASTER_TENANTS_KEY = 'mbi_master_tenants_v3';
 
 export const DEFAULT_MODULES: ModulePermissions = {
   sales: true,
@@ -543,7 +584,11 @@ export function getMasterActiveUsers(): MasterActiveUser[] {
       isOnline: true,
       totalTransactions: 142,
       sessionDurationMinutes: 195,
-      totalActiveHours: 142.5
+      totalActiveHours: 142.5,
+      allowedModules: { ...DEFAULT_MODULES },
+      permissions: { ...DEFAULT_USER_PERMISSIONS, canManageUsers: true, canVoidInvoice: true, canDeleteTransaction: true },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     },
     {
       id: 'usr_bilal_store_mgr',
@@ -559,7 +604,11 @@ export function getMasterActiveUsers(): MasterActiveUser[] {
       isOnline: true,
       totalTransactions: 89,
       sessionDurationMinutes: 75,
-      totalActiveHours: 89.2
+      totalActiveHours: 89.2,
+      allowedModules: { ...DEFAULT_MODULES, aiVoice: true, customPrint: true },
+      permissions: { ...DEFAULT_USER_PERMISSIONS, maxDiscountPercent: 20 },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     },
     {
       id: 'usr_zohaib_cashier',
@@ -575,7 +624,11 @@ export function getMasterActiveUsers(): MasterActiveUser[] {
       isOnline: true,
       totalTransactions: 310,
       sessionDurationMinutes: 320,
-      totalActiveHours: 245.0
+      totalActiveHours: 245.0,
+      allowedModules: { ...DEFAULT_MODULES, purchases: false, reports: false, accountsLedger: false },
+      permissions: { ...DEFAULT_USER_PERMISSIONS, canEditSalePrice: false, canViewPurchaseCost: false, canViewProfitReports: false, maxDiscountPercent: 10, canVoidInvoice: false },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     },
     {
       id: 'usr_hamza_acc',
@@ -591,7 +644,11 @@ export function getMasterActiveUsers(): MasterActiveUser[] {
       isOnline: false,
       totalTransactions: 64,
       sessionDurationMinutes: 0,
-      totalActiveHours: 54.8
+      totalActiveHours: 54.8,
+      allowedModules: { ...DEFAULT_MODULES, sales: false, pharmacy: false },
+      permissions: { ...DEFAULT_USER_PERMISSIONS, canEditSalePrice: false, canViewPurchaseCost: true, canViewProfitReports: true },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     },
     {
       id: 'usr_asif_sales',
@@ -607,12 +664,212 @@ export function getMasterActiveUsers(): MasterActiveUser[] {
       isOnline: true,
       totalTransactions: 215,
       sessionDurationMinutes: 140,
-      totalActiveHours: 118.4
+      totalActiveHours: 118.4,
+      allowedModules: { ...DEFAULT_MODULES, purchases: false, accountsLedger: false, reports: false },
+      permissions: { ...DEFAULT_USER_PERMISSIONS, canEditSalePrice: false, maxDiscountPercent: 5, canViewPurchaseCost: false, canViewProfitReports: false },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     }
   ];
 
   localStorage.setItem(MASTER_USERS_KEY, JSON.stringify(seedUsers));
   return seedUsers;
+}
+
+/**
+ * Save or update a Master User record with server synchronization
+ */
+export function saveMasterActiveUser(user: MasterActiveUser): MasterActiveUser[] {
+  const list = getMasterActiveUsers();
+  const idx = list.findIndex(u => u.id === user.id);
+  user.updatedAt = new Date().toISOString();
+
+  if (idx >= 0) {
+    list[idx] = { ...list[idx], ...user };
+    logMasterAudit('User Updated', 'SECURITY', `Updated configuration for user ${user.name} (${user.role})`, user.storeName);
+  } else {
+    list.unshift(user);
+    logMasterAudit('User Created', 'SECURITY', `Provisioned new user ${user.name} (${user.role}) for ${user.storeName}`, user.storeName);
+  }
+
+  localStorage.setItem(MASTER_USERS_KEY, JSON.stringify(list));
+
+  // Async sync to server API
+  if (typeof fetch !== 'undefined') {
+    fetch('/api/master/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(user)
+    }).catch(() => {});
+  }
+
+  return list;
+}
+
+/**
+ * Create a new user from Master Control
+ */
+export function createMasterActiveUser(userData: Omit<MasterActiveUser, 'id'>): MasterActiveUser {
+  const newUser: MasterActiveUser = {
+    ...userData,
+    id: 'usr_' + uuidv4().replace(/-/g, '').substring(0, 12),
+    allowedModules: userData.allowedModules || { ...DEFAULT_MODULES },
+    permissions: userData.permissions || { ...DEFAULT_USER_PERMISSIONS },
+    lastSyncTime: new Date().toISOString(),
+    isOnline: true,
+    totalTransactions: 0,
+    sessionDurationMinutes: 0,
+    totalActiveHours: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  saveMasterActiveUser(newUser);
+  return newUser;
+}
+
+/**
+ * Delete a user from Master Control
+ */
+export function deleteMasterActiveUser(userId: string): MasterActiveUser[] {
+  const list = getMasterActiveUsers();
+  const target = list.find(u => u.id === userId);
+  const filtered = list.filter(u => u.id !== userId);
+
+  if (target) {
+    logMasterAudit('User Deleted', 'SECURITY', `Removed user account ${target.name} (${target.emailOrPhone}) from ${target.storeName}`, target.storeName);
+  }
+
+  localStorage.setItem(MASTER_USERS_KEY, JSON.stringify(filtered));
+
+  // Async sync to server API
+  if (typeof fetch !== 'undefined') {
+    fetch(`/api/master/users/${userId}`, { method: 'DELETE' }).catch(() => {});
+  }
+
+  return filtered;
+}
+
+/**
+ * Update granular permissions for a user
+ */
+export function updateMasterUserPermissions(userId: string, permissions: Partial<MasterUserPermissions>): MasterActiveUser[] {
+  const list = getMasterActiveUsers();
+  const idx = list.findIndex(u => u.id === userId);
+  if (idx >= 0) {
+    list[idx].permissions = {
+      ...(list[idx].permissions || DEFAULT_USER_PERMISSIONS),
+      ...permissions
+    };
+    list[idx].updatedAt = new Date().toISOString();
+    logMasterAudit('User Permissions Changed', 'SECURITY', `Updated permissions matrix for user ${list[idx].name}`, list[idx].storeName);
+    localStorage.setItem(MASTER_USERS_KEY, JSON.stringify(list));
+
+    if (typeof fetch !== 'undefined') {
+      fetch(`/api/master/users/${userId}/permissions`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ permissions: list[idx].permissions })
+      }).catch(() => {});
+    }
+  }
+  return list;
+}
+
+/**
+ * Update module access flags for a user
+ */
+export function updateMasterUserModules(userId: string, modules: Partial<ModulePermissions>): MasterActiveUser[] {
+  const list = getMasterActiveUsers();
+  const idx = list.findIndex(u => u.id === userId);
+  if (idx >= 0) {
+    list[idx].allowedModules = {
+      ...(list[idx].allowedModules || DEFAULT_MODULES),
+      ...modules
+    };
+    list[idx].updatedAt = new Date().toISOString();
+    logMasterAudit('User Modules Changed', 'SECURITY', `Updated allowed modules for user ${list[idx].name}`, list[idx].storeName);
+    localStorage.setItem(MASTER_USERS_KEY, JSON.stringify(list));
+
+    if (typeof fetch !== 'undefined') {
+      fetch(`/api/master/users/${userId}/modules`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ allowedModules: list[idx].allowedModules })
+      }).catch(() => {});
+    }
+  }
+  return list;
+}
+
+/**
+ * Reset passcode for a user
+ */
+export function resetMasterUserPasscode(userId: string, newPasscode: string): { success: boolean; message: string; users: MasterActiveUser[] } {
+  const list = getMasterActiveUsers();
+  const idx = list.findIndex(u => u.id === userId);
+  if (idx >= 0) {
+    list[idx].passcode = newPasscode;
+    list[idx].updatedAt = new Date().toISOString();
+    logMasterAudit('Passcode Reset', 'SECURITY', `Reset passcode for user ${list[idx].name} to "${newPasscode}"`, list[idx].storeName);
+    localStorage.setItem(MASTER_USERS_KEY, JSON.stringify(list));
+
+    if (typeof fetch !== 'undefined') {
+      fetch(`/api/master/users/${userId}/passcode`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ passcode: newPasscode })
+      }).catch(() => {});
+    }
+
+    return {
+      success: true,
+      message: `Passcode for ${list[idx].name} has been reset to "${newPasscode}"`,
+      users: list
+    };
+  }
+  return { success: false, message: 'User not found', users: list };
+}
+
+/**
+ * Update custom setting overrides for a user
+ */
+export function updateMasterUserSettings(userId: string, settings: Record<string, any>): MasterActiveUser[] {
+  const list = getMasterActiveUsers();
+  const idx = list.findIndex(u => u.id === userId);
+  if (idx >= 0) {
+    list[idx].customSettingsOverrides = {
+      ...(list[idx].customSettingsOverrides || {}),
+      ...settings
+    };
+    list[idx].updatedAt = new Date().toISOString();
+    logMasterAudit('User Settings Overridden', 'SECURITY', `Custom settings updated for user ${list[idx].name}`, list[idx].storeName);
+    localStorage.setItem(MASTER_USERS_KEY, JSON.stringify(list));
+
+    if (typeof fetch !== 'undefined') {
+      fetch(`/api/master/users/${userId}/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: list[idx].customSettingsOverrides })
+      }).catch(() => {});
+    }
+  }
+  return list;
+}
+
+/**
+ * Clear hardware lock for a user
+ */
+export function clearMasterUserHardwareLock(userId: string): MasterActiveUser[] {
+  const list = getMasterActiveUsers();
+  const idx = list.findIndex(u => u.id === userId);
+  if (idx >= 0) {
+    list[idx].boundHwid = undefined;
+    list[idx].updatedAt = new Date().toISOString();
+    logMasterAudit('User Hardware Lock Cleared', 'SECURITY', `Cleared HWID lock for user ${list[idx].name}`, list[idx].storeName);
+    localStorage.setItem(MASTER_USERS_KEY, JSON.stringify(list));
+  }
+  return list;
 }
 
 /**
@@ -806,3 +1063,357 @@ export function unlockRemoteInstance(installationId: string): ClientInstanceHear
 
   return instances;
 }
+
+// ============================================================================
+// MULTI-TENANT & 3-DAY TRIAL ARCHITECTURE METHODS
+// ============================================================================
+
+/**
+ * Seed initial sample tenants if empty
+ */
+function getInitialTenants(): Tenant[] {
+  const now = new Date();
+  const trialEnd = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
+
+  return [
+    {
+      id: 'tenant-demo-01',
+      tenantId: 'tenant-demo-01',
+      organizationId: 'org-mbi-01',
+      licenseId: 'LIC-MBI-DEMO-01',
+      name: 'MBI INVENTRA (Demo Pharmacy)',
+      ownerName: 'M Bilal Inayat',
+      ownerEmail: 'm.bilalinayat786@gmail.com',
+      ownerPhone: '03364585863',
+      city: 'Lahore',
+      address: 'MBI Corporate Plaza, Commercial Center',
+      plan: 'Pharmacy Pro',
+      status: 'Active',
+      primaryAdminId: 'u1',
+      primaryAdminEmail: 'm.bilalinayat786@gmail.com',
+      trialStartDate: now.toISOString(),
+      trialExpiryDate: new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      isTrialActive: false,
+      trialExpired: false,
+      paidLicenseActive: true,
+      maxDevices: 10,
+      featureToggles: { ...DEFAULT_TENANT_FEATURE_TOGGLES },
+      totalMembersCount: 4,
+      totalInvoicesCount: 1420,
+      totalProductsCount: 890,
+      totalPartiesCount: 65,
+      lastLoginAt: now.toISOString(),
+      lastSyncAt: now.toISOString(),
+      notes: 'Flagship enterprise tenant account',
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    },
+    {
+      id: 'tenant-trial-02',
+      tenantId: 'tenant-trial-02',
+      organizationId: 'org-al-shifa-02',
+      licenseId: 'LIC-TR-9921-2',
+      name: 'Al-Shifa Medicos & Surgical',
+      ownerName: 'Dr. Tariq Mehmood',
+      ownerEmail: 'tariq.alshifa@gmail.com',
+      ownerPhone: '03001234567',
+      city: 'Faisalabad',
+      address: 'Near Allied Hospital, Jail Road',
+      plan: 'Trial (3 Days)',
+      status: 'Trial',
+      primaryAdminId: 'u-tariq-01',
+      primaryAdminEmail: 'tariq.alshifa@gmail.com',
+      trialStartDate: now.toISOString(),
+      trialExpiryDate: trialEnd.toISOString(),
+      isTrialActive: true,
+      trialExpired: false,
+      paidLicenseActive: false,
+      maxDevices: 2,
+      featureToggles: { ...DEFAULT_TENANT_FEATURE_TOGGLES },
+      totalMembersCount: 2,
+      totalInvoicesCount: 45,
+      totalProductsCount: 320,
+      totalPartiesCount: 12,
+      lastLoginAt: now.toISOString(),
+      lastSyncAt: now.toISOString(),
+      notes: 'New 3-day trial tenant registration',
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    }
+  ];
+}
+
+/**
+ * Retrieve all registered tenants
+ */
+export function getAllTenants(): Tenant[] {
+  try {
+    const stored = localStorage.getItem(MASTER_TENANTS_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load tenants:', e);
+  }
+
+  const initial = getInitialTenants();
+  localStorage.setItem(MASTER_TENANTS_KEY, JSON.stringify(initial));
+  return initial;
+}
+
+/**
+ * Get tenant by ID
+ */
+export function getTenantById(tenantId: string): Tenant | null {
+  const tenants = getAllTenants();
+  return tenants.find(t => t.id === tenantId || t.tenantId === tenantId) || null;
+}
+
+/**
+ * Save or update a tenant record
+ */
+export function saveTenant(tenant: Tenant): Tenant[] {
+  const tenants = getAllTenants();
+  const idx = tenants.findIndex(t => t.id === tenant.id || t.tenantId === tenant.tenantId);
+
+  const updatedTenant: Tenant = {
+    ...tenant,
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (idx >= 0) {
+    tenants[idx] = updatedTenant;
+  } else {
+    tenants.unshift(updatedTenant);
+  }
+
+  localStorage.setItem(MASTER_TENANTS_KEY, JSON.stringify(tenants));
+  logMasterAudit('Tenant Updated', 'FLEET', `Tenant ${tenant.name} (${tenant.tenantId}) details updated`, tenant.name);
+
+  // If this is the active local tenant, update mock_business / session cache
+  try {
+    const currentBiz = localStorage.getItem('mock_business');
+    if (currentBiz) {
+      const parsed = JSON.parse(currentBiz);
+      if (parsed.tenantId === tenant.tenantId || parsed.id === tenant.tenantId) {
+        localStorage.setItem('mbi_active_tenant_cache', JSON.stringify(updatedTenant));
+      }
+    }
+  } catch (e) {}
+
+  return tenants;
+}
+
+/**
+ * Delete a tenant (with audit protection)
+ */
+export function deleteTenant(tenantId: string): Tenant[] {
+  const tenants = getAllTenants();
+  const target = tenants.find(t => t.id === tenantId || t.tenantId === tenantId);
+  const filtered = tenants.filter(t => t.id !== tenantId && t.tenantId !== tenantId);
+
+  localStorage.setItem(MASTER_TENANTS_KEY, JSON.stringify(filtered));
+  if (target) {
+    logMasterAudit('Tenant Removed', 'SECURITY', `Tenant ${target.name} (${tenantId}) removed from master list`, target.name);
+  }
+  return filtered;
+}
+
+/**
+ * Calculate trial time remaining
+ */
+export function calculateTrialRemaining(trialExpiryDate?: string): {
+  isExpired: boolean;
+  totalHoursLeft: number;
+  daysLeft: number;
+  hoursLeft: number;
+  minutesLeft: number;
+  formatted: string;
+} {
+  if (!trialExpiryDate) {
+    return { isExpired: false, totalHoursLeft: 72, daysLeft: 3, hoursLeft: 0, minutesLeft: 0, formatted: '3 days remaining' };
+  }
+
+  const now = Date.now();
+  const expiry = new Date(trialExpiryDate).getTime();
+  const diffMs = expiry - now;
+
+  if (diffMs <= 0) {
+    return { isExpired: true, totalHoursLeft: 0, daysLeft: 0, hoursLeft: 0, minutesLeft: 0, formatted: 'Trial Expired' };
+  }
+
+  const totalMinutes = Math.floor(diffMs / (1000 * 60));
+  const totalHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const days = Math.floor(totalHours / 24);
+  const remainingHours = totalHours % 24;
+  const remainingMinutes = totalMinutes % 60;
+
+  let formatted = '';
+  if (days > 0) {
+    formatted = `${days}d ${remainingHours}h remaining`;
+  } else if (remainingHours > 0) {
+    formatted = `${remainingHours}h ${remainingMinutes}m remaining`;
+  } else {
+    formatted = `${remainingMinutes}m remaining`;
+  }
+
+  return {
+    isExpired: false,
+    totalHoursLeft: totalHours,
+    daysLeft: days,
+    hoursLeft: remainingHours,
+    minutesLeft: remainingMinutes,
+    formatted,
+  };
+}
+
+/**
+ * Create a new tenant automatically upon user registration with 3-Day Trial
+ */
+export function createTenantForRegistration(params: {
+  storeName: string;
+  ownerName: string;
+  email: string;
+  phone: string;
+  city?: string;
+  address?: string;
+  primaryAdminId: string;
+}): Tenant {
+  const now = new Date();
+  const trialExpiry = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000); // 3 Days Free Trial
+  const tenantId = 'tenant-' + uuidv4().substring(0, 8);
+  const licenseId = 'LIC-TR-' + Math.floor(100000 + Math.random() * 900000);
+
+  const newTenant: Tenant = {
+    id: tenantId,
+    tenantId,
+    organizationId: 'org-' + uuidv4().substring(0, 8),
+    licenseId,
+    name: params.storeName || 'My Pharmacy Store',
+    ownerName: params.ownerName || 'Store Owner',
+    ownerEmail: params.email,
+    ownerPhone: params.phone,
+    city: params.city || 'Lahore',
+    address: params.address || '',
+    plan: 'Trial (3 Days)',
+    status: 'Trial',
+    primaryAdminId: params.primaryAdminId,
+    primaryAdminEmail: params.email,
+    trialStartDate: now.toISOString(),
+    trialExpiryDate: trialExpiry.toISOString(),
+    isTrialActive: true,
+    trialExpired: false,
+    paidLicenseActive: false,
+    maxDevices: 3,
+    featureToggles: { ...DEFAULT_TENANT_FEATURE_TOGGLES },
+    totalMembersCount: 1,
+    totalInvoicesCount: 0,
+    totalProductsCount: 0,
+    totalPartiesCount: 0,
+    lastLoginAt: now.toISOString(),
+    lastSyncAt: now.toISOString(),
+    notes: 'Auto-provisioned 3-Day Free Trial Tenant',
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+  };
+
+  saveTenant(newTenant);
+  logMasterAudit('New Tenant Registered', 'FLEET', `Tenant ${newTenant.name} registered with 3-Day Trial`, newTenant.name);
+
+  return newTenant;
+}
+
+/**
+ * Reset / Extend 3-Day Trial from Master Server
+ */
+export function resetTenantTrial(tenantId: string, days: number = 3): Tenant | null {
+  const tenants = getAllTenants();
+  const idx = tenants.findIndex(t => t.id === tenantId || t.tenantId === tenantId);
+  if (idx < 0) return null;
+
+  const now = new Date();
+  const newExpiry = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+
+  tenants[idx].trialStartDate = now.toISOString();
+  tenants[idx].trialExpiryDate = newExpiry.toISOString();
+  tenants[idx].isTrialActive = true;
+  tenants[idx].trialExpired = false;
+  tenants[idx].status = 'Trial';
+  tenants[idx].updatedAt = now.toISOString();
+
+  localStorage.setItem(MASTER_TENANTS_KEY, JSON.stringify(tenants));
+  logMasterAudit('Trial Extended', 'LICENSE', `Reset 3-Day trial for tenant ${tenants[idx].name} (+${days} days)`, tenants[idx].name);
+
+  return tenants[idx];
+}
+
+/**
+ * Activate a paid license for a tenant from Master Server
+ */
+export function activatePaidTenantLicense(tenantId: string, plan: Tenant['plan'], expiryDays?: number): Tenant | null {
+  const tenants = getAllTenants();
+  const idx = tenants.findIndex(t => t.id === tenantId || t.tenantId === tenantId);
+  if (idx < 0) return null;
+
+  const now = new Date();
+  let expiryStr = 'Lifetime';
+  if (expiryDays && expiryDays > 0) {
+    expiryStr = new Date(now.getTime() + expiryDays * 24 * 60 * 60 * 1000).toISOString();
+  } else if (plan === 'Standard POS' || plan === 'Pharmacy Pro') {
+    expiryStr = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString(); // 1 year default
+  }
+
+  tenants[idx].plan = plan;
+  tenants[idx].status = 'Active';
+  tenants[idx].paidLicenseActive = true;
+  tenants[idx].isTrialActive = false;
+  tenants[idx].trialExpired = false;
+  tenants[idx].trialExpiryDate = expiryStr;
+  tenants[idx].updatedAt = now.toISOString();
+
+  localStorage.setItem(MASTER_TENANTS_KEY, JSON.stringify(tenants));
+  logMasterAudit('Paid License Activated', 'LICENSE', `Activated ${plan} license for tenant ${tenants[idx].name}`, tenants[idx].name);
+
+  return tenants[idx];
+}
+
+/**
+ * Toggle individual feature per tenant from Master Server
+ */
+export function updateTenantFeatureToggles(tenantId: string, features: Partial<TenantFeatureToggles>): Tenant | null {
+  const tenants = getAllTenants();
+  const idx = tenants.findIndex(t => t.id === tenantId || t.tenantId === tenantId);
+  if (idx < 0) return null;
+
+  tenants[idx].featureToggles = {
+    ...tenants[idx].featureToggles,
+    ...features,
+  };
+  tenants[idx].updatedAt = new Date().toISOString();
+
+  localStorage.setItem(MASTER_TENANTS_KEY, JSON.stringify(tenants));
+  logMasterAudit('Features Updated', 'SECURITY', `Updated feature permissions for tenant ${tenants[idx].name}`, tenants[idx].name);
+
+  return tenants[idx];
+}
+
+/**
+ * Update tenant status (Active, Suspended, Expired, Trial)
+ */
+export function updateTenantStatus(tenantId: string, status: Tenant['status']): Tenant | null {
+  const tenants = getAllTenants();
+  const idx = tenants.findIndex(t => t.id === tenantId || t.tenantId === tenantId);
+  if (idx < 0) return null;
+
+  tenants[idx].status = status;
+  tenants[idx].updatedAt = new Date().toISOString();
+
+  localStorage.setItem(MASTER_TENANTS_KEY, JSON.stringify(tenants));
+  logMasterAudit('Status Changed', 'FLEET', `Tenant ${tenants[idx].name} status changed to ${status}`, tenants[idx].name);
+
+  return tenants[idx];
+}
+

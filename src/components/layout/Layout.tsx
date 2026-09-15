@@ -27,6 +27,8 @@ import { CashierShiftModal } from '../pos/CashierShiftModal';
 import { MobileSubMenuModal } from './MobileSubMenuModal';
 import { StealthReturnBar } from '../common/StealthReturnBar';
 import { EmergencyLockScreen } from '../common/EmergencyLockScreen';
+import { BusinessContextSwitcher } from './BusinessContextSwitcher';
+import { AuditLogViewerModal } from '../admin/AuditLogViewerModal';
 import { getLicenseInfo, getLastLocalBackupTime, verifyLicenseWithHardware, incrementActiveMinutes } from '../../lib/licenseManager';
 import { SyncStatusIndicator } from './SyncStatusIndicator';
 import { PWAInstallBanner } from '../pwa/PWAInstallBanner';
@@ -63,6 +65,7 @@ export const Layout: React.FC = () => {
   const [isExceptionCenterOpen, setIsExceptionCenterOpen] = useState(false);
   const [isImportWizardOpen, setIsImportWizardOpen] = useState(false);
   const [isCashierShiftOpen, setIsCashierShiftOpen] = useState(false);
+  const [isAuditLogModalOpen, setIsAuditLogModalOpen] = useState(false);
   const [activeCashierShift, setActiveCashierShift] = useState<CashierShift | null>(null);
   const [selected360Product, setSelected360Product] = useState<Medicine | null>(null);
   const [selected360Party, setSelected360Party] = useState<Supplier | null>(null);
@@ -153,7 +156,7 @@ export const Layout: React.FC = () => {
   useEffect(() => {
     // Run hardware binding check on startup
     verifyLicenseWithHardware().then(res => {
-      if (!res.isValid && res.status === 'Hardware_Locked') {
+      if (res && !res.isValid && res.status === 'Hardware_Locked') {
         localStorage.setItem('mbi_emergency_lock_active', JSON.stringify({
           isLocked: true,
           reason: res.message || 'Hardware binding mismatch. Device not authorized.',
@@ -164,6 +167,8 @@ export const Layout: React.FC = () => {
           detail: { installationId: 'HW-MISMATCH', reason: res.message, mode: 'emergency_lock' }
         }));
       }
+    }).catch(err => {
+      console.warn('Hardware verification notice:', err);
     });
 
     // Track 1-minute live active pulse and session duration
@@ -257,6 +262,13 @@ export const Layout: React.FC = () => {
         return;
       }
 
+      // Alt+L or Ctrl+Shift+L to toggle Audit Log Vault for Primary Admin
+      if ((e.altKey && (e.key === 'l' || e.key === 'L')) || ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'L' || e.key === 'l'))) {
+        e.preventDefault();
+        setIsAuditLogModalOpen(prev => !prev);
+        return;
+      }
+
       // If in input field, don't trigger single letter shortcuts unless combined with Alt/Ctrl
       if (isInputFocused && !e.altKey && !e.ctrlKey && !e.metaKey && !e.key.startsWith('F')) {
         return;
@@ -273,7 +285,12 @@ export const Layout: React.FC = () => {
     };
 
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    const handleOpenAuditModal = () => setIsAuditLogModalOpen(true);
+    window.addEventListener('open-audit-log-modal', handleOpenAuditModal);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('open-audit-log-modal', handleOpenAuditModal);
+    };
   }, [navigate]);
 
   return (
@@ -606,6 +623,11 @@ export const Layout: React.FC = () => {
                   </button>
                 )}
 
+                {/* Business Context Switcher (Multi-Tenancy & Role / Account switching) */}
+                <div className="border-l border-slate-200 pl-1 sm:pl-2 ml-0.5">
+                  <BusinessContextSwitcher onOpenAuditLogs={() => setIsAuditLogModalOpen(true)} />
+                </div>
+
                 {/* Mobile Sub-Menu / Tools Trigger */}
                 <button 
                   title="Sub-Menu & System Tools" 
@@ -846,6 +868,12 @@ export const Layout: React.FC = () => {
         isOpen={isCashierShiftOpen}
         onClose={() => setIsCashierShiftOpen(false)}
         onShiftStatusChange={(s) => setActiveCashierShift(s)}
+      />
+
+      {/* Primary Admin Protected Audit Log Vault */}
+      <AuditLogViewerModal
+        isOpen={isAuditLogModalOpen}
+        onClose={() => setIsAuditLogModalOpen(false)}
       />
 
       {/* Mobile Sub-Menu & Quick Tools Sheet */}

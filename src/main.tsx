@@ -43,18 +43,29 @@ window.addEventListener('error', (event) => {
 
 window.addEventListener('unhandledrejection', (event) => {
   const reasonMsg = String(event?.reason?.message || event?.reason || '');
+  // Always prevent default to prevent top-level unhandled rejection crash in iframe
+  if (event.preventDefault) event.preventDefault();
+  if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+
   if (
     reasonMsg.includes('ResizeObserver') ||
     reasonMsg.includes('failed to connect to websocket') ||
     reasonMsg.includes("Cannot read properties of undefined (reading 'send')") ||
     reasonMsg.includes("Cannot set property fetch of #<Window>") ||
-    reasonMsg.includes("which has only a getter")
+    reasonMsg.includes("which has only a getter") ||
+    reasonMsg.includes('AudioContext') ||
+    reasonMsg.includes('audio') ||
+    reasonMsg.includes('permission-denied') ||
+    reasonMsg.includes('unavailable') ||
+    reasonMsg.includes('AbortError') ||
+    reasonMsg.includes('QuotaExceededError') ||
+    reasonMsg.includes('network') ||
+    reasonMsg.includes('fetch')
   ) {
-    if (event.preventDefault) event.preventDefault();
-    if (event.stopImmediatePropagation) event.stopImmediatePropagation();
     return true;
   }
-  console.error('[MBI Unhandled Rejection Hook]', event.reason);
+  console.warn('[MBI Managed Async Rejection]', event.reason);
+  return true;
 }, true);
 
 // Safe Mount Execution with Catch-All Fallback

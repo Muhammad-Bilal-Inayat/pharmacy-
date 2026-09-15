@@ -50,7 +50,7 @@ export const EditPaymentModal: React.FC<EditPaymentModalProps> = ({
       } else if (payment.partyId) {
         dbSuppliers.getById(payment.partyId).then(p => {
           if (p) setActiveParty(p);
-        });
+        }).catch(() => {});
       }
     }
   }, [isOpen, payment, propParty]);

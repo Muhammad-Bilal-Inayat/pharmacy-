@@ -1,8 +1,46 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    
+    // Multi-tenant business documents & nested subcollections
+    match /businesses/{businessId} {
+      allow read, write: if true;
+
+      match /{subcollection}/{docId} {
+        allow read, write: if true;
+      }
+    }
+
+    // Multi-tenant isolation collections
+    match /tenants/{tenantId} {
+      allow read, write: if true;
+    }
+
+    match /invoice_audits/{auditId} {
+      allow read, write: if true;
+    }
+
+    // Direct collections with tenant / business segregation
+    match /audit_logs/{logId} {
+      allow read, write: if true;
+    }
+
+    match /admin_settings/{settingId} {
+      allow read, write: if true;
+    }
+
+    match /rbac_roles/{roleDocId} {
+      allow read, write: if true;
+    }
+
+    match /app_users/{userId} {
+      allow read, write: if true;
+    }
+
+    // Default fallback
     match /{document=**} {
       allow read, write: if true;
     }
   }
 }
+

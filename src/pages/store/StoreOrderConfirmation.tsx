@@ -23,6 +23,8 @@ export const StoreOrderConfirmation: React.FC = () => {
       dbOnlineOrders.getById(id).then((found) => {
         if (found) setOrder(found);
         setLoading(false);
+      }).catch(() => {
+        setLoading(false);
       });
     }
   }, [id, order]);

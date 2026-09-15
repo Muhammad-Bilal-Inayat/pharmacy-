@@ -96,26 +96,29 @@ function getCanvasFingerprint(): string {
  */
 async function getAudioFingerprint(): Promise<string> {
   try {
+    const OfflineCtx = (window as any).OfflineAudioContext || (window as any).webkitOfflineAudioContext;
+    if (OfflineCtx) {
+      const offlineContext = new OfflineCtx(1, 44100, 44100);
+      const oscillator = offlineContext.createOscillator();
+      oscillator.type = 'triangle';
+      oscillator.frequency.setValueAtTime(10000, offlineContext.currentTime);
+      const compressor = offlineContext.createDynamicsCompressor();
+      oscillator.connect(compressor);
+      compressor.connect(offlineContext.destination);
+      oscillator.start(0);
+      return `offline_audio_${offlineContext.sampleRate}_${oscillator.frequency.value}`;
+    }
+
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioCtx) return 'audio_ctx_unsupported';
 
     const context = new AudioCtx();
-    const oscillator = context.createOscillator();
-    const analyser = context.createAnalyser();
-    const gain = context.createGain();
-    const scriptProcessor = context.createScriptProcessor(4096, 1, 1);
-
-    gain.gain.value = 0; // Mute so no sound plays
-    oscillator.type = 'triangle';
-    oscillator.frequency.setValueAtTime(10000, context.currentTime);
-
-    oscillator.connect(analyser);
-    analyser.connect(scriptProcessor);
-    scriptProcessor.connect(gain);
-    gain.connect(context.destination);
-
-    return `audio_sample_${context.sampleRate}_${oscillator.frequency.value}`;
-  } catch (e) {
+    const rate = context.sampleRate || 44100;
+    try {
+      context.close().catch(() => {});
+    } catch {}
+    return `audio_sample_${rate}_10000`;
+  } catch {
     return 'audio_fallback_sig';
   }
 }
@@ -137,7 +140,12 @@ export async function generateHardwareProfile(): Promise<HardwareProfile> {
 
   const { vendor, renderer } = getWebGLFingerprint();
   const canvasHash = getCanvasFingerprint();
-  const audioHash = await getAudioFingerprint();
+  let audioHash = 'audio_fallback_sig';
+  try {
+    audioHash = await getAudioFingerprint();
+  } catch {
+    audioHash = 'audio_fallback_sig';
+  }
   const cpuCores = navigator.hardwareConcurrency || 4;
   const deviceMemoryGb = (navigator as any).deviceMemory || 8;
   const screenResolution = `${window.screen?.width || 1920}x${window.screen?.height || 1080}@${window.devicePixelRatio || 1}`;
