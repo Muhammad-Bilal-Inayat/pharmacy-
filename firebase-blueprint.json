@@ -1,0 +1,140 @@
+{
+  "entities": {
+    "users": {
+      "title": "User",
+      "description": "User profile with role-based access information",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "name": { "type": "string" },
+        "role": { "type": "string", "enum": ["Primary Admin", "Admin", "Salesman", "Biller", "Accountant", "Inventory Manager"] },
+        "businessId": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "email", "name", "role"]
+    },
+    "businesses": {
+      "title": "Business",
+      "description": "Business company configuration and settings",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "members": { "type": "array", "items": { "type": "string" } },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "address": { "type": "string" },
+        "city": { "type": "string" },
+        "taxNumber": { "type": "string" },
+        "currency": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name", "ownerUid"]
+    },
+    "medicines": {
+      "title": "Medicine",
+      "description": "Inventory stock items and pharmaceuticals",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "genericName": { "type": "string" },
+        "category": { "type": "string" },
+        "stock": { "type": "number" },
+        "salePrice": { "type": "number" },
+        "purchasePrice": { "type": "number" },
+        "unit": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
+    "invoices": {
+      "title": "Invoice",
+      "description": "Sales invoices, estimates, credit notes, and delivery challans",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "invoiceNumber": { "type": "string" },
+        "partyName": { "type": "string" },
+        "total": { "type": "number" },
+        "status": { "type": "string" },
+        "date": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "invoiceNumber"]
+    },
+    "purchaseOrders": {
+      "title": "PurchaseOrder",
+      "description": "Purchase bills, orders, and returns",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "billNumber": { "type": "string" },
+        "supplierName": { "type": "string" },
+        "total": { "type": "number" },
+        "status": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id"]
+    },
+    "suppliers": {
+      "title": "Party",
+      "description": "Customers and suppliers ledgers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "phone": { "type": "string" },
+        "balance": { "type": "number" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
+    "partyPayments": {
+      "title": "PartyPayment",
+      "description": "Payment In and Payment Out transactions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "partyName": { "type": "string" },
+        "type": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "amount"]
+    },
+    "expenses": {
+      "title": "Expense",
+      "description": "Business expense records",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "category": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "amount"]
+    },
+    "bankTransactions": {
+      "title": "BankTransaction",
+      "description": "Cash and bank account transactions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "accountId": { "type": "string" },
+        "amount": { "type": "number" },
+        "type": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "amount"]
+    }
+  },
+  "firestoreRules": "firestore.rules"
+}

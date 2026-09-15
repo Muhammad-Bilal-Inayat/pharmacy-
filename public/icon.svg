@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="112" fill="#0f172a" />
+  <circle cx="256" cy="256" r="190" fill="#1e293b" />
+  <!-- Medical Cross / Pill motif -->
+  <path d="M216 112h80v104h104v80H296v104h-80V296H112v-80h104V112z" fill="#10b981" />
+  <!-- Center Highlight -->
+  <rect x="236" y="236" width="40" height="40" rx="8" fill="#ffffff" />
+</svg>
