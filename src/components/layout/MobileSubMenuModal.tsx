@@ -266,22 +266,6 @@ export const MobileSubMenuModal: React.FC<MobileSubMenuModalProps> = ({
                 </div>
                 <ChevronRight className="w-4 h-4 text-slate-400" />
               </button>
-
-              <button
-                onClick={() => handleAction(onOpenMasterAdmin)}
-                className="w-full p-3 flex items-center justify-between hover:bg-slate-50 transition-colors text-left cursor-pointer"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="p-1.5 rounded-lg bg-purple-50 text-purple-600">
-                    <Server className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <div className="text-xs font-bold text-slate-800">Master Admin</div>
-                    <div className="text-[10px] text-slate-500">License & System Controls</div>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-slate-400" />
-              </button>
             </div>
           </div>
 

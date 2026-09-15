@@ -27,6 +27,7 @@ import { StoreCheckout } from './pages/store/StoreCheckout';
 import { StoreOrderConfirmation } from './pages/store/StoreOrderConfirmation';
 import { StoreOrderTracking } from './pages/store/StoreOrderTracking';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
+import { MasterPanelPage } from './pages/master/MasterPanelPage';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import SetupBusiness from './pages/SetupBusiness';
@@ -125,6 +126,7 @@ function RoleAccessGuard({ children }: { children: React.ReactNode }) {
 function AppRoutes() {
   return (
     <Routes>
+      <Route path="/master" element={<MasterPanelPage />} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/setup" element={<ProtectedRoute><SetupBusiness /></ProtectedRoute>} />

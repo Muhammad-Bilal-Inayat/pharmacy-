@@ -11,7 +11,8 @@ import {
 } from 'lucide-react';
 import { 
   getMasterServerConfig, saveMasterServerConfig, isMasterAdminAuthenticated,
-  verifyMasterCredentials, logoutMasterAdminSession, getAllClientLicenses,
+  verifyMasterCredentials, logoutMasterAdminSession, loginMasterAdminOnServer,
+  getAllClientLicenses,
   saveClientLicense, deleteClientLicense, getAllClientInstances,
   getAllClientBackups, saveClientBackup, deleteClientBackup,
   generateNewLicenseKey, resetLicenseHardware, dispatchRemoteCommand,
@@ -26,7 +27,7 @@ import {
   calculateTrialRemaining,
   ClientLicense, ClientInstanceHeartbeat, ClientBackupRecord, MasterAuditLog, MasterActiveUser,
   MasterUserPermissions, DEFAULT_USER_PERMISSIONS,
-  DEFAULT_MODULES, ModulePermissions, Tenant, TenantFeatureToggles
+  DEFAULT_MODULES, ModulePermissions, Tenant, TenantFeatureToggles, DEFAULT_TENANT_FEATURE_TOGGLES
 } from '../../lib/masterServerService';
 import { exportFullBackup, restoreFullBackup, verifyDatabaseIntegrity } from '../../lib/db';
 import { 
@@ -258,11 +259,23 @@ export const MasterServerControlModal: React.FC<MasterServerControlModalProps> =
     startImpersonating({
       clientName: t.name,
       ownerName: t.ownerName,
+      phone: t.ownerPhone,
+      city: t.city,
       licenseKey: t.licenseId || `MBI-${t.tenantId.toUpperCase()}`,
-      plan: t.plan === '3-Day Free Trial' ? 'Trial' : (t.plan as any),
-      isLifetime: t.plan === 'Lifetime Perpetual',
-      maxDevices: t.maxDevices || 3,
-      enabledModules: { ...DEFAULT_MODULES }
+      businessProfile: {
+        id: t.tenantId,
+        tenantId: t.tenantId,
+        name: t.name,
+        ownerUid: t.primaryAdminId || 'u1',
+        members: [t.primaryAdminId || 'u1'],
+        phone: t.ownerPhone,
+        city: t.city || 'Lahore',
+        address: t.address || '',
+        currency: 'PKR',
+        vatPercentage: 0,
+        createdAt: t.createdAt,
+        updatedAt: t.updatedAt
+      }
     });
     onClose();
   };
@@ -289,6 +302,7 @@ export const MasterServerControlModal: React.FC<MasterServerControlModalProps> =
       plan: newTenantPlan,
       status: 'Active',
       primaryAdminId: 'u_' + Date.now(),
+      primaryAdminEmail: newTenantEmail.trim() || `${newTenantOwnerName.toLowerCase().replace(/\s+/g, '')}@gmail.com`,
       trialStartDate: new Date().toISOString(),
       trialExpiryDate: new Date(Date.now() + (newTenantTrialDays * 24 * 60 * 60 * 1000)).toISOString(),
       isTrialActive: newTenantPlan === '3-Day Free Trial',
@@ -296,17 +310,9 @@ export const MasterServerControlModal: React.FC<MasterServerControlModalProps> =
       paidLicenseActive: newTenantPlan !== '3-Day Free Trial',
       maxDevices: 3,
       featureToggles: {
-        canEditBills: true,
-        canDeleteBills: false,
-        canManageBatches: true,
-        canViewPurchasePrice: true,
-        canAccessStockAudit: true,
+        ...DEFAULT_TENANT_FEATURE_TOGGLES,
         onlineStore: true,
-        narcoticsSchedule: false,
-        loyaltyProgram: true,
-        multiBranch: false,
-        aiVoiceAssistant: true,
-        taxFbrIntegration: false,
+        aiVoice: true,
       },
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
@@ -327,39 +333,43 @@ export const MasterServerControlModal: React.FC<MasterServerControlModalProps> =
   };
 
   // Handle Login to Master Panel
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError(null);
 
-    const result = verifyMasterCredentials(usernameInput, passwordInput, totpCodeInput);
-    if (result.requires2FA) {
-      setRequires2FA(true);
-      setLoginError(result.message);
-      return;
-    }
+    try {
+      const result = await loginMasterAdminOnServer(usernameInput, passwordInput, totpCodeInput);
+      if (result.requires2FA) {
+        setRequires2FA(true);
+        setLoginError(result.message);
+        return;
+      }
 
-    if (!result.success) {
-      setLoginError(result.message);
-      return;
-    }
+      if (!result.success) {
+        setLoginError(result.message);
+        return;
+      }
 
-    setIsAuthenticated(true);
-    setRequires2FA(false);
-    setPasswordInput('');
-    setTotpCodeInput('');
-    refreshAllData();
-    showToast('Master Server Admin access authenticated!');
+      setIsAuthenticated(true);
+      setRequires2FA(false);
+      setPasswordInput('');
+      setTotpCodeInput('');
+      refreshAllData();
+      showToast('Master Server Admin access authenticated!');
+    } catch (err: any) {
+      setLoginError(err?.message || 'Authentication failed');
+    }
   };
 
   // Handle Logout
-  const handleLogout = () => {
-    logoutMasterAdminSession();
+  const handleLogout = async () => {
+    await logoutMasterAdminSession();
     setIsAuthenticated(false);
     setRequires2FA(false);
     setUsernameInput('');
     setPasswordInput('');
     setTotpCodeInput('');
-    showToast('Master Panel session locked.');
+    showToast('Master Admin Session Locked.');
   };
 
   // Setup 2FA QR Code generator
@@ -1533,7 +1543,7 @@ export const MasterServerControlModal: React.FC<MasterServerControlModalProps> =
                                       <span>
                                         {trialInfo.isExpired 
                                           ? 'Trial Expired' 
-                                          : `Trial Active: ${trialInfo.days}d ${trialInfo.hours}h remaining`}
+                                          : `Trial Active: ${trialInfo.daysLeft}d ${trialInfo.hoursLeft}h remaining`}
                                       </span>
                                     </span>
                                   )}

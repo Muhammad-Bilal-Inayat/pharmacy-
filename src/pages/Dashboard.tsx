@@ -27,6 +27,7 @@ import {
 } from '../components/dashboard/WidgetCustomizerModal';
 import { InvoicePrintModal } from '../components/sales/InvoicePrintModal';
 import { MobileDashboardView } from '../components/dashboard/MobileDashboardView';
+import { getDashboardSummaryMetrics } from '../lib/quickTransactionService';
 
 interface TopProduct {
   id: string;
@@ -308,11 +309,15 @@ export const Dashboard: React.FC = () => {
 
     window.addEventListener('mbi-data-synced', handleSyncUpdate);
     window.addEventListener('mbi-local-db-change', handleSyncUpdate);
+    window.addEventListener('dashboard-metrics-updated', handleSyncUpdate);
+    window.addEventListener('quick-transaction-saved', handleSyncUpdate);
     window.addEventListener('storage', handleSyncUpdate);
 
     return () => {
       window.removeEventListener('mbi-data-synced', handleSyncUpdate);
       window.removeEventListener('mbi-local-db-change', handleSyncUpdate);
+      window.removeEventListener('dashboard-metrics-updated', handleSyncUpdate);
+      window.removeEventListener('quick-transaction-saved', handleSyncUpdate);
       window.removeEventListener('storage', handleSyncUpdate);
     };
   }, []);
@@ -344,11 +349,12 @@ export const Dashboard: React.FC = () => {
     const lowStock = medsData.filter(m => m.quantity <= (m.lowStockThreshold || 20));
     setLowStockItems(lowStock);
 
-    // Calculate Sales & Invoices
-    const saleSum = invsData.reduce((sum, inv) => sum + (inv.grandTotal || 0), 0);
+    // Calculate Sales & Invoices with approved summary sync
+    const quickSummary = getDashboardSummaryMetrics();
+    const saleSum = invsData.reduce((sum, inv) => sum + (inv.grandTotal || 0), 0) + (quickSummary.netSales || 0);
     setTotalSale(saleSum);
 
-    const poSum = posData.reduce((sum, po) => sum + (po.totalAmount || 0), 0);
+    const poSum = posData.reduce((sum, po) => sum + (po.totalAmount || 0), 0) + (quickSummary.netPurchases || 0);
     setTotalPurchase(poSum);
 
     const expSum = expsData.reduce((sum, e) => sum + (e.amount || 0), 0);

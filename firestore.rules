@@ -2,6 +2,26 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
+    // Master Server Protected Collections - Deny direct public access; only accessible via secure backend server
+    match /master_config/{docId} {
+      allow read, write: if false;
+    }
+    match /master_licenses/{licenseId} {
+      allow read, write: if false;
+    }
+    match /master_instances/{instanceId} {
+      allow read, write: if false;
+    }
+    match /master_backups/{backupId} {
+      allow read, write: if false;
+    }
+    match /master_audit_logs/{logId} {
+      allow read, write: if false;
+    }
+    match /master_sessions/{sessionId} {
+      allow read, write: if false;
+    }
+
     // Multi-tenant business documents & nested subcollections
     match /businesses/{businessId} {
       allow read, write: if true;
@@ -37,7 +57,7 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
-    // Default fallback
+    // Default fallback for operational collections
     match /{document=**} {
       allow read, write: if true;
     }

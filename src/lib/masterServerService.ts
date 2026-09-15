@@ -2,6 +2,9 @@ import { hashPassword, generateTOTPSecret, generateEmergencyBackupCodes, verifyT
 import { v4 as uuidv4 } from 'uuid';
 import { Tenant, TenantFeatureToggles, DEFAULT_TENANT_FEATURE_TOGGLES } from '../types';
 
+export type { Tenant, TenantFeatureToggles };
+export { DEFAULT_TENANT_FEATURE_TOGGLES };
+
 export interface ModulePermissions {
   sales: boolean;
   purchases: boolean;
@@ -272,33 +275,97 @@ export function saveMasterServerConfig(config: Partial<MasterServerAdminConfig>)
   return updated;
 }
 
+const MASTER_TOKEN_KEY = 'mbi_master_server_token_v3';
+
+/**
+ * Get stored Master Admin Server Session Token
+ */
+export function getMasterSessionToken(): string {
+  return sessionStorage.getItem(MASTER_TOKEN_KEY) || localStorage.getItem(MASTER_TOKEN_KEY) || '';
+}
+
+/**
+ * Set Master Admin Server Session Token
+ */
+export function setMasterSessionToken(token: string) {
+  sessionStorage.setItem(MASTER_TOKEN_KEY, token);
+  localStorage.setItem(MASTER_TOKEN_KEY, token);
+}
+
+/**
+ * Clear Master Admin Server Session Token
+ */
+export function clearMasterSessionToken() {
+  sessionStorage.removeItem(MASTER_TOKEN_KEY);
+  localStorage.removeItem(MASTER_TOKEN_KEY);
+}
+
+/**
+ * Get standard headers for Master Admin requests with Bearer Token
+ */
+export function getMasterAuthHeaders(): HeadersInit {
+  const token = getMasterSessionToken();
+  return {
+    'Content-Type': 'application/json',
+    ...(token ? { 'Authorization': `Bearer ${token}`, 'x-master-token': token } : {}),
+  };
+}
+
+/**
+ * Verify Master Admin authentication with backend server
+ */
+export async function checkServerMasterAuth(): Promise<boolean> {
+  const token = getMasterSessionToken();
+  if (!token) return false;
+  try {
+    const res = await fetch('/api/master/auth/check-status', {
+      headers: getMasterAuthHeaders(),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return Boolean(data.authorized);
+    }
+  } catch (e) {
+    // If offline or network error, fallback to local session validation if unexpired
+    return isMasterAdminAuthenticated();
+  }
+  return false;
+}
+
 /**
  * Check if Master Admin is currently logged in (Valid Session)
  */
 export function isMasterAdminAuthenticated(): boolean {
+  const token = getMasterSessionToken();
   const session = sessionStorage.getItem(MASTER_SESSION_KEY);
-  if (!session) return false;
+  if (!session && !token) return false;
   try {
-    const data = JSON.parse(session);
-    // Session valid for 4 hours
-    if (Date.now() - data.loginTime < 4 * 60 * 60 * 1000) {
-      return true;
+    if (session) {
+      const data = JSON.parse(session);
+      // Session valid for 4 hours locally
+      if (Date.now() - data.loginTime < 4 * 60 * 60 * 1000) {
+        return true;
+      }
     }
+    if (token) return true;
   } catch (e) {}
   sessionStorage.removeItem(MASTER_SESSION_KEY);
+  clearMasterSessionToken();
   return false;
 }
 
 /**
  * Set Master Admin Login Session
  */
-export function setMasterAdminSession(username: string) {
+export function setMasterAdminSession(username: string, token?: string) {
+  const serverToken = token || uuidv4();
   const sessionData = {
     username,
     loginTime: Date.now(),
-    token: uuidv4(),
+    token: serverToken,
   };
   sessionStorage.setItem(MASTER_SESSION_KEY, JSON.stringify(sessionData));
+  setMasterSessionToken(serverToken);
   saveMasterServerConfig({ lastLogin: new Date().toISOString() });
   logMasterAudit('Master Admin Logged In', 'SECURITY', `Authenticated session established for user ${username}`);
 }
@@ -306,9 +373,51 @@ export function setMasterAdminSession(username: string) {
 /**
  * Log out from Master Admin Panel
  */
-export function logoutMasterAdminSession() {
+export async function logoutMasterAdminSession() {
   logMasterAudit('Master Admin Logged Out', 'SECURITY', 'Session explicitly locked by user');
+  try {
+    await fetch('/api/master/auth/logout', {
+      method: 'POST',
+      headers: getMasterAuthHeaders(),
+    });
+  } catch (e) {}
   sessionStorage.removeItem(MASTER_SESSION_KEY);
+  clearMasterSessionToken();
+}
+
+/**
+ * Authenticate with Master Admin Backend API
+ */
+export async function loginMasterAdminOnServer(
+  usernameInput: string,
+  passwordInput: string,
+  totpCodeInput?: string
+): Promise<{ success: boolean; requires2FA?: boolean; message: string; token?: string }> {
+  try {
+    const res = await fetch('/api/master/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: usernameInput,
+        password: passwordInput,
+        totpCode: totpCodeInput,
+      }),
+    });
+
+    const data = await res.json();
+    if (data.success && data.token) {
+      setMasterAdminSession(data.username || usernameInput, data.token);
+      return { success: true, message: data.message || 'Master Admin authenticated successfully', token: data.token };
+    }
+    if (data.requires2FA) {
+      return { success: false, requires2FA: true, message: data.message || '2FA code required' };
+    }
+    return { success: false, message: data.error || data.message || 'Invalid Master credentials' };
+  } catch (err: any) {
+    // Fallback to local credential validation if server is unreachable
+    console.warn('[Master Auth] Server endpoint offline, falling back to local credentials', err);
+    return verifyMasterCredentials(usernameInput, passwordInput, totpCodeInput);
+  }
 }
 
 /**

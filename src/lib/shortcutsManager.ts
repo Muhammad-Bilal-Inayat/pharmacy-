@@ -67,8 +67,8 @@ export const DEFAULT_SHORTCUTS: ShortcutItem[] = [
     name: 'Estimate / Quotation',
     description: 'Generate price estimate or quotation for customer',
     category: 'sale',
-    defaultKey: 'Alt + M',
-    currentKey: 'Alt + M',
+    defaultKey: 'Alt + Q',
+    currentKey: 'Alt + Q',
     path: '/sale/estimate?action=add',
     actionType: 'navigate',
     iconName: 'FileText',
@@ -99,14 +99,28 @@ export const DEFAULT_SHORTCUTS: ShortcutItem[] = [
     editable: true
   },
 
+  // --- QUICK PRIVATE TRANSACTION & SPECIAL ---
+  {
+    id: 'quick-private-transaction',
+    name: 'Quick Private Transaction Panel',
+    description: 'Fast private transaction modal for Sales, Purchases, Returns & Adjustments',
+    category: 'sale',
+    defaultKey: 'Alt + P',
+    currentKey: 'Alt + P',
+    actionType: 'event',
+    eventName: 'open-quick-transaction-panel',
+    iconName: 'Zap',
+    editable: true
+  },
+
   // --- PURCHASE ---
   {
     id: 'purchase-bill',
     name: 'Add Purchase Bill',
     description: 'Record stock purchase from medicine distributor / vendor',
     category: 'purchase',
-    defaultKey: 'Alt + P',
-    currentKey: 'Alt + P',
+    defaultKey: 'Alt + B',
+    currentKey: 'Alt + B',
     path: '/purchase?action=add',
     actionType: 'navigate',
     iconName: 'PackagePlus',

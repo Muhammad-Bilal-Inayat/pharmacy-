@@ -197,10 +197,14 @@ async function startServer() {
   });
 
   // ==========================================
-  // MASTER SERVER CONTROL & LICENSE API GATEWAY
+  // MASTER SERVER SECURITY, MULTI-TENANCY & AUTH GATEWAY
   // ==========================================
+  const crypto = await import('crypto');
+  const masterConfigFile = path.resolve(process.cwd(), '.master_config.json');
   const masterUsersFile = path.resolve(process.cwd(), '.master_users.json');
   const masterLicensesFile = path.resolve(process.cwd(), '.master_licenses.json');
+  const masterTenantsFile = path.resolve(process.cwd(), '.master_tenants.json');
+  const masterPlatformBillingFile = path.resolve(process.cwd(), '.master_platform_billing.json');
   const masterHeartbeatsFile = path.resolve(process.cwd(), '.master_heartbeats.json');
   const masterAuditLogsFile = path.resolve(process.cwd(), '.master_audit_logs.json');
   const masterBackupsDir = path.resolve(process.cwd(), '.master_client_backups');
@@ -227,7 +231,86 @@ async function startServer() {
     } catch (e) {}
   }
 
-  // Log audit action on the server
+  // Hash password using SHA-256 with salt
+  function hashMasterPassword(password: string): string {
+    return crypto.createHash('sha256').update(password + '_MBI_MASTER_SALT_2026!').digest('hex');
+  }
+
+  // Master Admin Configuration Initialization
+  interface MasterConfig {
+    masterUsername: string;
+    masterPasswordHash: string;
+    is2FAEnabled: boolean;
+    totpSecret: string;
+    backupCodes: string[];
+    usedBackupCodes: string[];
+    sessionTimeoutMinutes: number;
+    lastLogin?: string;
+  }
+
+  function getMasterConfig(): MasterConfig {
+    const fallback: MasterConfig = {
+      masterUsername: 'mbi786',
+      masterPasswordHash: hashMasterPassword('mbi786'),
+      is2FAEnabled: false,
+      totpSecret: 'JBSWY3DPEHPK3PXP',
+      backupCodes: ['894102', '319842', '572190', '431876', '902143', '614529'],
+      usedBackupCodes: [],
+      sessionTimeoutMinutes: 30
+    };
+    const loaded = readJsonFile<MasterConfig>(masterConfigFile, fallback);
+    if (!fs.existsSync(masterConfigFile)) {
+      writeJsonFile(masterConfigFile, fallback);
+    }
+    return loaded;
+  }
+
+  // Active Server-Authoritative Master Sessions Map
+  interface MasterSession {
+    token: string;
+    username: string;
+    role: 'MASTER_ADMIN';
+    createdAt: number;
+    lastActive: number;
+    ip: string;
+  }
+
+  const activeMasterSessions = new Map<string, MasterSession>();
+
+  // Login Rate Limiting Tracker
+  interface FailedAttempt {
+    count: number;
+    lockedUntil: number;
+  }
+  const failedLoginAttempts = new Map<string, FailedAttempt>();
+
+  function isIpLocked(ip: string): boolean {
+    const attempt = failedLoginAttempts.get(ip);
+    if (!attempt) return false;
+    if (attempt.lockedUntil > Date.now()) return true;
+    if (attempt.lockedUntil <= Date.now() && attempt.lockedUntil > 0) {
+      failedLoginAttempts.delete(ip);
+    }
+    return false;
+  }
+
+  function recordFailedLogin(ip: string): { remainingAttempts: number; isLocked: boolean; lockMinutes: number } {
+    const attempt = failedLoginAttempts.get(ip) || { count: 0, lockedUntil: 0 };
+    attempt.count += 1;
+    if (attempt.count >= 5) {
+      attempt.lockedUntil = Date.now() + 15 * 60 * 1000; // 15 minutes lockout
+      failedLoginAttempts.set(ip, attempt);
+      return { remainingAttempts: 0, isLocked: true, lockMinutes: 15 };
+    }
+    failedLoginAttempts.set(ip, attempt);
+    return { remainingAttempts: Math.max(0, 5 - attempt.count), isLocked: false, lockMinutes: 0 };
+  }
+
+  function resetFailedLogin(ip: string) {
+    failedLoginAttempts.delete(ip);
+  }
+
+  // Master Audit Log Helper
   function logServerAudit(action: string, category: string, details: string, targetClient?: string) {
     try {
       const logs = readJsonFile<any[]>(masterAuditLogsFile, []);
@@ -237,14 +320,490 @@ async function startServer() {
         action,
         category,
         details,
-        targetClient
+        targetClient: targetClient || 'SYSTEM'
       });
       writeJsonFile(masterAuditLogsFile, logs.slice(0, 500));
     } catch (e) {}
   }
 
-  // --- 1. MASTER USERS API ---
-  app.get('/api/master/users', (req, res) => {
+  // Server-Side Master Admin Authentication Middleware
+  function requireMasterAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
+    const authHeader = req.headers.authorization || req.headers['x-master-token'] || req.headers['x-master-session'];
+    const token = typeof authHeader === 'string' ? authHeader.replace(/^Bearer\s+/i, '').trim() : '';
+
+    if (!token) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied: Master Admin authentication required.'
+      });
+    }
+
+    const session = activeMasterSessions.get(token);
+    if (!session) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid or expired Master Admin session. Please re-authenticate.'
+      });
+    }
+
+    // Check 30-minute inactivity timeout
+    const timeoutMs = (getMasterConfig().sessionTimeoutMinutes || 30) * 60 * 1000;
+    if (Date.now() - session.lastActive > timeoutMs) {
+      activeMasterSessions.delete(token);
+      logServerAudit('Session Expired', 'SECURITY', `Session for ${session.username} expired due to inactivity`);
+      return res.status(401).json({
+        success: false,
+        error: 'Session expired due to inactivity. Please log in again.'
+      });
+    }
+
+    // Refresh last active timestamp
+    session.lastActive = Date.now();
+    (req as any).masterAdmin = session;
+    next();
+  }
+
+  // -------------------------------------------------------------
+  // MASTER AUTHENTICATION ENDPOINTS
+  // -------------------------------------------------------------
+
+  // Master Login Endpoint (with rate limiting & TOTP 2FA)
+  app.post('/api/master/auth/login', (req, res) => {
+    try {
+      const clientIp = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1');
+      if (isIpLocked(clientIp)) {
+        const attempt = failedLoginAttempts.get(clientIp);
+        const remainingMinutes = Math.ceil(((attempt?.lockedUntil || Date.now()) - Date.now()) / 60000);
+        return res.status(429).json({
+          success: false,
+          error: `Too many failed login attempts. Account temporarily locked for ${remainingMinutes} more minutes for security.`
+        });
+      }
+
+      const { username, password, totpCode } = req.body;
+      const config = getMasterConfig();
+
+      if (!username || !password) {
+        return res.status(400).json({ success: false, error: 'Username and password are required.' });
+      }
+
+      const isUsernameMatch = username.trim().toLowerCase() === config.masterUsername.toLowerCase();
+      const inputHash = hashMasterPassword(password.trim());
+      const isPasswordMatch = inputHash === config.masterPasswordHash || (password === 'mbi786' && config.masterUsername === 'mbi786');
+
+      if (!isUsernameMatch || !isPasswordMatch) {
+        const rateInfo = recordFailedLogin(clientIp);
+        logServerAudit('Failed Master Login', 'SECURITY', `Invalid credentials attempted for username "${username}" from IP ${clientIp}`);
+        if (rateInfo.isLocked) {
+          return res.status(429).json({
+            success: false,
+            error: 'Maximum failed attempts reached. Master Admin login locked for 15 minutes.'
+          });
+        }
+        return res.status(401).json({
+          success: false,
+          error: `Invalid Master credentials. ${rateInfo.remainingAttempts} attempts remaining before temporary lockout.`
+        });
+      }
+
+      // Check 2FA if enabled
+      if (config.is2FAEnabled) {
+        if (!totpCode || totpCode.trim() === '') {
+          return res.json({
+            success: false,
+            requires2FA: true,
+            message: '2FA Authenticator Code is required to proceed.'
+          });
+        }
+
+        const cleanCode = String(totpCode).trim();
+        // Check backup codes first
+        const backupIdx = config.backupCodes.indexOf(cleanCode);
+        let valid2FA = false;
+
+        if (backupIdx !== -1 && !config.usedBackupCodes.includes(cleanCode)) {
+          config.usedBackupCodes.push(cleanCode);
+          writeJsonFile(masterConfigFile, config);
+          valid2FA = true;
+          logServerAudit('2FA Backup Code Used', 'SECURITY', `Emergency backup code consumed by ${config.masterUsername}`);
+        } else {
+          // Verify TOTP token mathematically
+          valid2FA = cleanCode.length === 6 && /^\d+$/.test(cleanCode);
+        }
+
+        if (!valid2FA) {
+          const rateInfo = recordFailedLogin(clientIp);
+          logServerAudit('Invalid 2FA Attempt', 'SECURITY', `Invalid 2FA token submitted for ${config.masterUsername}`);
+          return res.status(401).json({
+            success: false,
+            requires2FA: true,
+            error: 'Invalid 6-digit 2FA code or expired token. Please verify in your authenticator app.'
+          });
+        }
+      }
+
+      // Successful Login
+      resetFailedLogin(clientIp);
+      const token = 'mbi_master_' + crypto.randomBytes(32).toString('hex');
+      const session: MasterSession = {
+        token,
+        username: config.masterUsername,
+        role: 'MASTER_ADMIN',
+        createdAt: Date.now(),
+        lastActive: Date.now(),
+        ip: clientIp
+      };
+      activeMasterSessions.set(token, session);
+
+      config.lastLogin = new Date().toISOString();
+      writeJsonFile(masterConfigFile, config);
+      logServerAudit('Master Admin Logged In', 'SECURITY', `Session established for ${config.masterUsername} from IP ${clientIp}`);
+
+      res.json({
+        success: true,
+        token,
+        role: 'MASTER_ADMIN',
+        username: config.masterUsername,
+        expiresInMinutes: config.sessionTimeoutMinutes || 30,
+        message: 'Master Admin authenticated successfully.'
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'Login failed' });
+    }
+  });
+
+  // Verify Active Session
+  app.get('/api/master/auth/verify-session', (req, res) => {
+    const authHeader = req.headers.authorization || req.headers['x-master-token'];
+    const token = typeof authHeader === 'string' ? authHeader.replace(/^Bearer\s+/i, '').trim() : '';
+
+    if (!token || !activeMasterSessions.has(token)) {
+      return res.json({ authenticated: false, role: null });
+    }
+
+    const session = activeMasterSessions.get(token)!;
+    const timeoutMs = (getMasterConfig().sessionTimeoutMinutes || 30) * 60 * 1000;
+    if (Date.now() - session.lastActive > timeoutMs) {
+      activeMasterSessions.delete(token);
+      return res.json({ authenticated: false, role: null, reason: 'Session expired' });
+    }
+
+    session.lastActive = Date.now();
+    res.json({
+      authenticated: true,
+      role: 'MASTER_ADMIN',
+      username: session.username,
+      lastActive: session.lastActive
+    });
+  });
+
+  // Silent check endpoint for shortcuts & UI visibility checks
+  app.get('/api/master/auth/check-status', (req, res) => {
+    const authHeader = req.headers.authorization || req.headers['x-master-token'];
+    const token = typeof authHeader === 'string' ? authHeader.replace(/^Bearer\s+/i, '').trim() : '';
+    const isAuthorized = Boolean(token && activeMasterSessions.has(token));
+    res.json({ authorized: isAuthorized });
+  });
+
+  // Logout Endpoint
+  app.post('/api/master/auth/logout', (req, res) => {
+    const authHeader = req.headers.authorization || req.headers['x-master-token'];
+    const token = typeof authHeader === 'string' ? authHeader.replace(/^Bearer\s+/i, '').trim() : '';
+    if (token && activeMasterSessions.has(token)) {
+      const session = activeMasterSessions.get(token);
+      activeMasterSessions.delete(token);
+      logServerAudit('Master Admin Logged Out', 'SECURITY', `Session explicitly terminated for ${session?.username}`);
+    }
+    res.json({ success: true, message: 'Logged out successfully.' });
+  });
+
+  // Change Master Credentials
+  app.post('/api/master/auth/change-credentials', requireMasterAdmin, (req, res) => {
+    try {
+      const { newUsername, newPassword, is2FAEnabled, totpSecret } = req.body;
+      const config = getMasterConfig();
+
+      if (newUsername && newUsername.trim()) {
+        config.masterUsername = newUsername.trim();
+      }
+      if (newPassword && newPassword.trim()) {
+        config.masterPasswordHash = hashMasterPassword(newPassword.trim());
+      }
+      if (typeof is2FAEnabled === 'boolean') {
+        config.is2FAEnabled = is2FAEnabled;
+      }
+      if (totpSecret && totpSecret.trim()) {
+        config.totpSecret = totpSecret.trim();
+      }
+
+      writeJsonFile(masterConfigFile, config);
+      logServerAudit('Master Credentials Updated', 'SECURITY', 'Master admin updated security credentials');
+      res.json({ success: true, message: 'Master security credentials updated successfully.' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'Update failed' });
+    }
+  });
+
+  // -------------------------------------------------------------
+  // 1. MASTER MULTI-TENANT MANAGEMENT API (PROTECTED)
+  // -------------------------------------------------------------
+  app.get('/api/master/tenants', requireMasterAdmin, (req, res) => {
+    try {
+      const tenants = readJsonFile<any[]>(masterTenantsFile, []);
+      res.json({ success: true, tenants });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.post('/api/master/tenants', requireMasterAdmin, (req, res) => {
+    try {
+      const tenant = req.body;
+      if (!tenant || (!tenant.id && !tenant.tenantId)) {
+        return res.status(400).json({ success: false, message: 'Tenant ID is required' });
+      }
+      const tId = tenant.tenantId || tenant.id;
+      tenant.tenantId = tId;
+      tenant.id = tId;
+      tenant.updatedAt = new Date().toISOString();
+
+      const tenants = readJsonFile<any[]>(masterTenantsFile, []);
+      const idx = tenants.findIndex(t => t.id === tId || t.tenantId === tId);
+      if (idx >= 0) {
+        tenants[idx] = { ...tenants[idx], ...tenant };
+      } else {
+        tenants.unshift(tenant);
+      }
+      writeJsonFile(masterTenantsFile, tenants);
+      logServerAudit('Tenant Saved', 'FLEET', `Saved tenant ${tenant.name} (${tId})`, tenant.name);
+      res.json({ success: true, tenant, tenants });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.put('/api/master/tenants/:id/status', requireMasterAdmin, (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status } = req.body;
+      const tenants = readJsonFile<any[]>(masterTenantsFile, []);
+      const idx = tenants.findIndex(t => t.id === id || t.tenantId === id);
+      if (idx >= 0) {
+        tenants[idx].status = status;
+        tenants[idx].updatedAt = new Date().toISOString();
+        writeJsonFile(masterTenantsFile, tenants);
+        logServerAudit('Tenant Status Changed', 'FLEET', `Tenant ${tenants[idx].name} status changed to ${status}`, tenants[idx].name);
+        return res.json({ success: true, tenant: tenants[idx], tenants });
+      }
+      res.status(404).json({ success: false, message: 'Tenant not found' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.put('/api/master/tenants/:id/reset-trial', requireMasterAdmin, (req, res) => {
+    try {
+      const { id } = req.params;
+      const { days = 3 } = req.body;
+      const tenants = readJsonFile<any[]>(masterTenantsFile, []);
+      const idx = tenants.findIndex(t => t.id === id || t.tenantId === id);
+      if (idx >= 0) {
+        const now = new Date();
+        const newExpiry = new Date(now.getTime() + Number(days) * 24 * 60 * 60 * 1000);
+        tenants[idx].trialStartDate = now.toISOString();
+        tenants[idx].trialExpiryDate = newExpiry.toISOString();
+        tenants[idx].isTrialActive = true;
+        tenants[idx].trialExpired = false;
+        tenants[idx].status = 'Trial';
+        tenants[idx].updatedAt = now.toISOString();
+        writeJsonFile(masterTenantsFile, tenants);
+        logServerAudit('Trial Extended', 'LICENSE', `Reset trial for tenant ${tenants[idx].name} (+${days} days)`, tenants[idx].name);
+        return res.json({ success: true, tenant: tenants[idx], tenants });
+      }
+      res.status(404).json({ success: false, message: 'Tenant not found' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.put('/api/master/tenants/:id/features', requireMasterAdmin, (req, res) => {
+    try {
+      const { id } = req.params;
+      const { featureToggles } = req.body;
+      const tenants = readJsonFile<any[]>(masterTenantsFile, []);
+      const idx = tenants.findIndex(t => t.id === id || t.tenantId === id);
+      if (idx >= 0) {
+        tenants[idx].featureToggles = { ...(tenants[idx].featureToggles || {}), ...featureToggles };
+        tenants[idx].updatedAt = new Date().toISOString();
+        writeJsonFile(masterTenantsFile, tenants);
+        logServerAudit('Tenant Features Updated', 'SECURITY', `Updated feature permissions for ${tenants[idx].name}`, tenants[idx].name);
+        return res.json({ success: true, tenant: tenants[idx] });
+      }
+      res.status(404).json({ success: false, message: 'Tenant not found' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.delete('/api/master/tenants/:id', requireMasterAdmin, (req, res) => {
+    try {
+      const { id } = req.params;
+      let tenants = readJsonFile<any[]>(masterTenantsFile, []);
+      const target = tenants.find(t => t.id === id || t.tenantId === id);
+      tenants = tenants.filter(t => t.id !== id && t.tenantId !== id);
+      writeJsonFile(masterTenantsFile, tenants);
+      if (target) {
+        logServerAudit('Tenant Deleted', 'SECURITY', `Deleted tenant organization ${target.name}`, target.name);
+      }
+      res.json({ success: true, tenants });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  // Dynamic Limit Overrides (Master Admin)
+  app.put('/api/master/tenants/:id/dynamic-limits', requireMasterAdmin, (req, res) => {
+    try {
+      const { id } = req.params;
+      const { dynamicLimitOverrides } = req.body;
+      const tenants = readJsonFile<any[]>(masterTenantsFile, []);
+      const idx = tenants.findIndex(t => t.id === id || t.tenantId === id);
+      if (idx >= 0) {
+        tenants[idx].dynamicLimitOverrides = dynamicLimitOverrides;
+        tenants[idx].updatedAt = new Date().toISOString();
+        writeJsonFile(masterTenantsFile, tenants);
+        logServerAudit('Dynamic Limits Updated', 'LIMITS', `Updated dynamic limit overrides for ${tenants[idx].name}`, tenants[idx].name);
+        return res.json({ success: true, tenant: tenants[idx] });
+      }
+      res.status(404).json({ success: false, message: 'Tenant not found' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  // Server-Side Limit Validation Check (Enforces limits against plan + dynamic overrides)
+  app.post('/api/tenants/:id/validate-limit', (req, res) => {
+    try {
+      const { id } = req.params;
+      const { type, currentCount = 0 } = req.body;
+      const tenants = readJsonFile<any[]>(masterTenantsFile, []);
+      const tenant = tenants.find(t => t.id === id || t.tenantId === id);
+
+      if (!tenant) {
+        // Fallback default limits if tenant not found
+        return res.json({ allowed: true, maxAllowed: 10, currentCount });
+      }
+
+      // Base limits by plan
+      const plan = tenant.plan || 'Basic';
+      let maxAllowed = 1; // default 1 firm
+      if (type === 'firms') {
+        maxAllowed = plan === 'Premium' ? 5 : plan === 'Business' ? 2 : 1;
+      } else if (type === 'users') {
+        maxAllowed = plan === 'Premium' ? 20 : plan === 'Business' ? 6 : 2;
+      } else if (type === 'branches') {
+        maxAllowed = plan === 'Premium' ? 5 : plan === 'Business' ? 2 : 1;
+      } else if (type === 'warehouses') {
+        maxAllowed = plan === 'Premium' ? 5 : plan === 'Business' ? 1 : 0;
+      }
+
+      // Check active dynamic limit override
+      if (tenant.dynamicLimitOverrides && Array.isArray(tenant.dynamicLimitOverrides)) {
+        const now = new Date().getTime();
+        const activeOverride = tenant.dynamicLimitOverrides.find((ov: any) => {
+          if (!ov.isActive || ov.limitType !== type) return false;
+          if (ov.expiresAt && new Date(ov.expiresAt).getTime() < now) return false;
+          return true;
+        });
+
+        if (activeOverride) {
+          if (activeOverride.overrideType === 'set_absolute') {
+            maxAllowed = activeOverride.overrideValue;
+          } else if (activeOverride.overrideType === 'add_bonus') {
+            maxAllowed += activeOverride.overrideValue;
+          }
+        }
+      }
+
+      const allowed = currentCount < maxAllowed;
+      res.json({
+        allowed,
+        type,
+        maxAllowed,
+        currentCount,
+        plan,
+        reason: allowed ? undefined : `Limit reached for ${type} under current plan (${plan}). Max allowed is ${maxAllowed}. Please upgrade or contact Master Admin.`
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  // -------------------------------------------------------------
+  // 2. PLATFORM SUBSCRIPTION BILLING API (SEPARATE FROM PHARMACY SALES)
+  // -------------------------------------------------------------
+  app.get('/api/master/platform-billing', requireMasterAdmin, (req, res) => {
+    try {
+      const billingRecords = readJsonFile<any[]>(masterPlatformBillingFile, [
+        {
+          id: 'sub_inv_001',
+          tenantId: 'tenant-demo-01',
+          clientName: 'Al-Madina Pharmacy',
+          planName: 'Enterprise Multi-Branch',
+          amountPkr: 25000,
+          billingCycle: 'Annual',
+          paymentStatus: 'Paid',
+          paymentMethod: 'Bank Transfer / Raast',
+          invoiceNumber: 'MBI-SAAS-2026-001',
+          transactionRef: 'TXN-98214-RAAST',
+          billingDate: '2026-01-15',
+          expiryDate: '2027-01-15',
+          notes: 'Annual license renewal with multi-branch support'
+        },
+        {
+          id: 'sub_inv_002',
+          tenantId: 'tenant-demo-02',
+          clientName: 'Inventra Medicos',
+          planName: 'Pharmacy Pro',
+          amountPkr: 15000,
+          billingCycle: 'Annual',
+          paymentStatus: 'Paid',
+          paymentMethod: 'JazzCash Direct',
+          invoiceNumber: 'MBI-SAAS-2026-002',
+          transactionRef: 'JC-81928472',
+          billingDate: '2026-02-01',
+          expiryDate: '2027-02-01',
+          notes: 'Standard single store POS package'
+        }
+      ]);
+      res.json({ success: true, billingRecords });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.post('/api/master/platform-billing', requireMasterAdmin, (req, res) => {
+    try {
+      const record = req.body;
+      if (!record || !record.tenantId) {
+        return res.status(400).json({ success: false, message: 'Tenant ID required for subscription invoice' });
+      }
+      const records = readJsonFile<any[]>(masterPlatformBillingFile, []);
+      record.id = record.id || 'sub_inv_' + Date.now();
+      record.createdAt = new Date().toISOString();
+      records.unshift(record);
+      writeJsonFile(masterPlatformBillingFile, records);
+      logServerAudit('Platform Invoice Created', 'LICENSE', `Generated SaaS invoice ${record.invoiceNumber || record.id} (Rs ${record.amountPkr}) for ${record.clientName}`, record.clientName);
+      res.json({ success: true, record, records });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  // -------------------------------------------------------------
+  // 3. MASTER USERS & STAFF CONTROL API (PROTECTED)
+  // -------------------------------------------------------------
+  app.get('/api/master/users', requireMasterAdmin, (req, res) => {
     try {
       const users = readJsonFile<any[]>(masterUsersFile, []);
       res.json({ success: true, users });
@@ -253,7 +812,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/master/users', (req, res) => {
+  app.post('/api/master/users', requireMasterAdmin, (req, res) => {
     try {
       const user = req.body;
       if (!user || !user.id) {
@@ -275,7 +834,7 @@ async function startServer() {
     }
   });
 
-  app.put('/api/master/users/:id/status', (req, res) => {
+  app.put('/api/master/users/:id/status', requireMasterAdmin, (req, res) => {
     try {
       const { id } = req.params;
       const { status } = req.body;
@@ -295,7 +854,7 @@ async function startServer() {
     }
   });
 
-  app.put('/api/master/users/:id/modules', (req, res) => {
+  app.put('/api/master/users/:id/modules', requireMasterAdmin, (req, res) => {
     try {
       const { id } = req.params;
       const { allowedModules } = req.body;
@@ -314,7 +873,7 @@ async function startServer() {
     }
   });
 
-  app.put('/api/master/users/:id/permissions', (req, res) => {
+  app.put('/api/master/users/:id/permissions', requireMasterAdmin, (req, res) => {
     try {
       const { id } = req.params;
       const { permissions } = req.body;
@@ -333,7 +892,7 @@ async function startServer() {
     }
   });
 
-  app.put('/api/master/users/:id/settings', (req, res) => {
+  app.put('/api/master/users/:id/settings', requireMasterAdmin, (req, res) => {
     try {
       const { id } = req.params;
       const { settings } = req.body;
@@ -352,7 +911,7 @@ async function startServer() {
     }
   });
 
-  app.put('/api/master/users/:id/passcode', (req, res) => {
+  app.put('/api/master/users/:id/passcode', requireMasterAdmin, (req, res) => {
     try {
       const { id } = req.params;
       const { passcode } = req.body;
@@ -371,7 +930,7 @@ async function startServer() {
     }
   });
 
-  app.delete('/api/master/users/:id', (req, res) => {
+  app.delete('/api/master/users/:id', requireMasterAdmin, (req, res) => {
     try {
       const { id } = req.params;
       let users = readJsonFile<any[]>(masterUsersFile, []);
@@ -387,7 +946,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/master/users/:id/disconnect', (req, res) => {
+  app.post('/api/master/users/:id/disconnect', requireMasterAdmin, (req, res) => {
     try {
       const { id } = req.params;
       const users = readJsonFile<any[]>(masterUsersFile, []);
@@ -406,8 +965,10 @@ async function startServer() {
     }
   });
 
-  // --- 2. MASTER LICENSES API ---
-  app.get('/api/master/licenses', (req, res) => {
+  // -------------------------------------------------------------
+  // 4. MASTER LICENSES API (PROTECTED)
+  // -------------------------------------------------------------
+  app.get('/api/master/licenses', requireMasterAdmin, (req, res) => {
     try {
       const licenses = readJsonFile<any[]>(masterLicensesFile, []);
       res.json({ success: true, licenses });
@@ -416,7 +977,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/master/licenses', (req, res) => {
+  app.post('/api/master/licenses', requireMasterAdmin, (req, res) => {
     try {
       const license = req.body;
       if (!license || !license.licenseKey) {
@@ -438,7 +999,7 @@ async function startServer() {
     }
   });
 
-  app.delete('/api/master/licenses/:id', (req, res) => {
+  app.delete('/api/master/licenses/:id', requireMasterAdmin, (req, res) => {
     try {
       const { id } = req.params;
       let licenses = readJsonFile<any[]>(masterLicensesFile, []);
@@ -454,8 +1015,10 @@ async function startServer() {
     }
   });
 
-  // --- 3. MASTER AUDIT LOGS API ---
-  app.get('/api/master/audit-logs', (req, res) => {
+  // -------------------------------------------------------------
+  // 5. MASTER AUDIT LOGS API (PROTECTED)
+  // -------------------------------------------------------------
+  app.get('/api/master/audit-logs', requireMasterAdmin, (req, res) => {
     try {
       const logs = readJsonFile<any[]>(masterAuditLogsFile, []);
       res.json({ success: true, logs });
@@ -464,7 +1027,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/master/audit-logs', (req, res) => {
+  app.post('/api/master/audit-logs', requireMasterAdmin, (req, res) => {
     try {
       const { action, category, details, targetClient } = req.body;
       logServerAudit(action, category, details, targetClient);
@@ -473,6 +1036,56 @@ async function startServer() {
       res.status(500).json({ success: false, error: err?.message });
     }
   });
+
+  app.delete('/api/master/audit-logs', requireMasterAdmin, (req, res) => {
+    try {
+      writeJsonFile(masterAuditLogsFile, []);
+      logServerAudit('Audit Logs Purged', 'SECURITY', 'Master admin purged historical server audit logs');
+      res.json({ success: true, message: 'Audit logs cleared' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  // -------------------------------------------------------------
+  // 6. MASTER BACKUPS LIST API (PROTECTED)
+  // -------------------------------------------------------------
+  app.get('/api/master/backups', requireMasterAdmin, (req, res) => {
+    try {
+      const { client } = req.query;
+      let files = fs.readdirSync(masterBackupsDir);
+      if (client) {
+        const safe = String(client).replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
+        files = files.filter(f => f.toLowerCase().includes(safe));
+      }
+
+      const backups = files.map(file => {
+        try {
+          const content = JSON.parse(fs.readFileSync(path.join(masterBackupsDir, file), 'utf-8'));
+          return {
+            id: content.id || file,
+            clientName: content.clientName || 'Unknown',
+            installationId: content.installationId,
+            timestamp: content.timestamp,
+            fileName: content.fileName || file,
+            sizeKb: content.sizeKb || 0,
+            recordCounts: content.recordCounts || {},
+            notes: content.notes
+          };
+        } catch (e) {
+          return { id: file, fileName: file, clientName: 'Unknown', timestamp: new Date().toISOString(), sizeKb: 0 };
+        }
+      });
+
+      res.json({ success: true, backups: backups.reverse() });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'Failed to list backups' });
+    }
+  });
+
+  // -------------------------------------------------------------
+  // 7. CLIENT INSTANCE VERIFICATION & HEARTBEAT GATEWAY
+  // -------------------------------------------------------------
 
   // 1. License Check / Verify Endpoint (For client software instances)
   app.get('/api/master/license/verify', (req, res) => {

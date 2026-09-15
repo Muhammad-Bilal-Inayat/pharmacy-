@@ -29,6 +29,7 @@ import { StealthReturnBar } from '../common/StealthReturnBar';
 import { EmergencyLockScreen } from '../common/EmergencyLockScreen';
 import { BusinessContextSwitcher } from './BusinessContextSwitcher';
 import { AuditLogViewerModal } from '../admin/AuditLogViewerModal';
+import { QuickTransactionPanel } from '../common/QuickTransactionPanel';
 import { getLicenseInfo, getLastLocalBackupTime, verifyLicenseWithHardware, incrementActiveMinutes } from '../../lib/licenseManager';
 import { SyncStatusIndicator } from './SyncStatusIndicator';
 import { PWAInstallBanner } from '../pwa/PWAInstallBanner';
@@ -36,6 +37,7 @@ import { useSettings } from '../../contexts/SettingsContext';
 import { Medicine, Supplier, CashierShift } from '../../types';
 import { dbCashierShifts } from '../../lib/db';
 import { calculateLiveShiftMetrics } from '../../lib/cashierShiftManager';
+import { checkServerMasterAuth } from '../../lib/masterServerService';
 import { 
   getStoredShortcuts, 
   matchesKeyboardEvent, 
@@ -66,6 +68,7 @@ export const Layout: React.FC = () => {
   const [isImportWizardOpen, setIsImportWizardOpen] = useState(false);
   const [isCashierShiftOpen, setIsCashierShiftOpen] = useState(false);
   const [isAuditLogModalOpen, setIsAuditLogModalOpen] = useState(false);
+  const [isQuickTransactionOpen, setIsQuickTransactionOpen] = useState(false);
   const [activeCashierShift, setActiveCashierShift] = useState<CashierShift | null>(null);
   const [selected360Product, setSelected360Product] = useState<Medicine | null>(null);
   const [selected360Party, setSelected360Party] = useState<Supplier | null>(null);
@@ -191,7 +194,14 @@ export const Layout: React.FC = () => {
     const handleOpenHelp = () => setIsHelpModalOpen(true);
     const handleOpenFirebaseAuth = () => setIsFirebaseAuthOpen(true);
     const handleOpenLicense = () => setIsLicenseModalOpen(true);
-    const handleOpenMasterAdmin = () => setIsMasterAdminOpen(true);
+    const handleOpenMasterAdmin = () => {
+      checkServerMasterAuth().then((isAuth) => {
+        if (isAuth) {
+          setIsMasterAdminOpen(true);
+        }
+      }).catch(() => {});
+    };
+    const handleOpenQuickTransaction = () => setIsQuickTransactionOpen(true);
     const handleToggleSidebar = () => toggleSidebarCollapsed();
     const handleTriggerSync = () => {
       window.location.reload();
@@ -208,6 +218,7 @@ export const Layout: React.FC = () => {
     window.addEventListener('open-firebase-auth', handleOpenFirebaseAuth);
     window.addEventListener('open-license-modal', handleOpenLicense);
     window.addEventListener('open-master-admin', handleOpenMasterAdmin);
+    window.addEventListener('open-quick-transaction-panel', handleOpenQuickTransaction);
     window.addEventListener('toggle-sidebar-collapse', handleToggleSidebar);
     window.addEventListener('trigger-cloud-sync', handleTriggerSync);
 
@@ -223,6 +234,7 @@ export const Layout: React.FC = () => {
       window.removeEventListener('open-firebase-auth', handleOpenFirebaseAuth);
       window.removeEventListener('open-license-modal', handleOpenLicense);
       window.removeEventListener('open-master-admin', handleOpenMasterAdmin);
+      window.removeEventListener('open-quick-transaction-panel', handleOpenQuickTransaction);
       window.removeEventListener('toggle-sidebar-collapse', handleToggleSidebar);
       window.removeEventListener('trigger-cloud-sync', handleTriggerSync);
     };
@@ -255,10 +267,15 @@ export const Layout: React.FC = () => {
         return;
       }
 
-      // Alt+M or Ctrl+Shift+M to toggle Master Server Control Hub anytime
+      // Alt+M or Ctrl+Shift+M: Secure server-side check. If user is MASTER_ADMIN, navigate to /master.
+      // If not MASTER_ADMIN, do nothing and do not display an error revealing the Master Panel.
       if ((e.altKey && (e.key === 'm' || e.key === 'M')) || ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'M' || e.key === 'm'))) {
         e.preventDefault();
-        setIsMasterAdminOpen(prev => !prev);
+        checkServerMasterAuth().then((isAuth) => {
+          if (isAuth) {
+            navigate('/master');
+          }
+        }).catch(() => {});
         return;
       }
 
@@ -266,6 +283,13 @@ export const Layout: React.FC = () => {
       if ((e.altKey && (e.key === 'l' || e.key === 'L')) || ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'L' || e.key === 'l'))) {
         e.preventDefault();
         setIsAuditLogModalOpen(prev => !prev);
+        return;
+      }
+
+      // Alt+P or Ctrl+Shift+P to toggle Quick Private Transaction Panel on Customer Side
+      if ((e.altKey && (e.key === 'p' || e.key === 'P')) || ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'P' || e.key === 'p'))) {
+        e.preventDefault();
+        setIsQuickTransactionOpen(prev => !prev);
         return;
       }
 
@@ -874,6 +898,12 @@ export const Layout: React.FC = () => {
       <AuditLogViewerModal
         isOpen={isAuditLogModalOpen}
         onClose={() => setIsAuditLogModalOpen(false)}
+      />
+
+      {/* Quick Private Transaction Panel (Alt + P) */}
+      <QuickTransactionPanel
+        isOpen={isQuickTransactionOpen}
+        onClose={() => setIsQuickTransactionOpen(false)}
       />
 
       {/* Mobile Sub-Menu & Quick Tools Sheet */}

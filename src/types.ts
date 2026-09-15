@@ -81,10 +81,14 @@ export interface Tenant {
   ownerPhone: string;
   city?: string;
   address?: string;
-  plan: 'Trial (3 Days)' | 'Trial (15 Days)' | 'Standard POS' | 'Pharmacy Pro' | 'Enterprise Multi-Branch' | 'Lifetime Perpetual';
+  plan: 'Basic' | 'Business' | 'Premium' | '3-Day Free Trial' | 'Trial (3 Days)' | 'Trial (15 Days)' | 'Standard POS' | 'Pharmacy Pro' | 'Enterprise Multi-Branch' | 'Lifetime Perpetual';
   status: 'Active' | 'Suspended' | 'Expired' | 'Trial';
   primaryAdminId: string;
   primaryAdminEmail: string;
+  maxFirms?: number;
+  maxUsers?: number;
+  allowedRoles?: UserRole[];
+  dynamicOverrides?: DynamicLimitOverride[];
   trialStartDate: string;
   trialExpiryDate: string;
   isTrialActive: boolean;
@@ -108,15 +112,19 @@ export interface InvoiceEditAuditRecord {
   tenantId?: string;
   invoiceId: string;
   invoiceNumber: string;
-  editorId: string;
-  editorName: string;
-  editorRole: string;
+  editorId?: string;
+  editorName?: string;
+  editorRole?: string;
+  editedByUserId?: string;
+  editedByUserName?: string;
+  editedByUserRole?: string;
+  editReason?: string;
   timestamp: string | number;
-  reason: string;
+  reason?: string;
   originalGrandTotal: number;
   newGrandTotal: number;
-  originalItemsCount: number;
-  newItemsCount: number;
+  originalItemsCount?: number;
+  newItemsCount?: number;
   changesSummary: string;
   originalSnapshot?: any;
   updatedSnapshot?: any;
@@ -200,6 +208,7 @@ export interface MultiCurrencySettings {
 
 export interface Business {
   id: string;
+  tenantId?: string;
   ownerUid: string;
   members: string[];
   name: string;
@@ -1131,6 +1140,156 @@ export interface LoyaltyCustomer {
   lastVisit: string;
   createdAt: string;
 }
+
+// ============================================================================
+// DYNAMIC PLAN & LIMIT DEFINITIONS (SaaS Master Engine)
+// ============================================================================
+
+export type SaaSPlanTier = 'Basic' | 'Business' | 'Premium';
+
+export interface SaaSPlanPricing {
+  monthly: number;
+  yearly: number;
+  threeYears: number;
+  fiveYears: number;
+}
+
+export interface SaaSPlanDefinition {
+  id: SaaSPlanTier;
+  name: SaaSPlanTier;
+  badge: string;
+  tagline: string;
+  description: string;
+  pricing: SaaSPlanPricing;
+  trialDurationDays: number;
+  maxFirms: number;
+  maxUsers: number;
+  allowedRoles: UserRole[];
+  features: TenantFeatureToggles;
+  isPopular?: boolean;
+  isVisible: boolean;
+  order: number;
+  notes?: string;
+  updatedAt: string;
+}
+
+export interface DynamicLimitOverride {
+  id: string;
+  tenantId: string;
+  firmId?: string;
+  overrideType: 'max_firms' | 'max_users' | 'role_access' | 'feature_toggle' | 'trial_extension' | 'custom_limit';
+  targetField: string;
+  previousValue: any;
+  newValue: any;
+  reason: string;
+  createdBy: string;
+  createdAt: string;
+  expiryDate?: string; // ISO string or undefined for permanent
+  status: 'Active' | 'Revoked' | 'Expired';
+}
+
+// ============================================================================
+// QUICK PRIVATE TRANSACTION PANEL TYPES (Alt + P / Ctrl + Shift + P)
+// ============================================================================
+
+export type QuickTransactionType = 
+  | 'Sale' 
+  | 'Purchase' 
+  | 'Sale Return' 
+  | 'Purchase Return' 
+  | 'Stock Adjustment';
+
+export type QuickTransactionStatus = 'Posted' | 'Draft' | 'Cancelled';
+
+export interface QuickTransactionLineItem {
+  id: string;
+  medicineId?: string;
+  name: string;
+  genericName?: string;
+  category?: string;
+  barcode?: string;
+  batchNumber?: string;
+  expiryDate?: string;
+  packSize?: string;
+  unit?: string;
+  quantity: number;
+  purchaseRate: number; // Cost price
+  saleRate: number;     // Selling price
+  discountPercent?: number;
+  discountAmount?: number;
+  taxPercent?: number;
+  taxAmount?: number;
+  lineTotal: number;
+  lineProfit?: number; // Only exposed if user has profit viewing permissions
+  adjustmentReason?: 'Damage' | 'Breakage' | 'Physical Audit' | 'Expired' | 'Correction' | 'Other';
+}
+
+export interface QuickTransaction {
+  id: string;
+  tenantId: string;
+  firmId: string;
+  transactionNumber: string;
+  type: QuickTransactionType;
+  date: string;
+  time: string;
+  timestamp: number;
+  status: QuickTransactionStatus;
+  
+  // Party details
+  partyId?: string;
+  partyName?: string;
+  partyType?: 'Customer' | 'Supplier';
+  partyPhone?: string;
+
+  // Line items (Detailed item data kept isolated)
+  items: QuickTransactionLineItem[];
+  itemsCount: number;
+  totalQuantity: number;
+
+  // Calculations
+  subtotal: number;
+  totalDiscount: number;
+  totalTax: number;
+  grandTotal: number;
+  returnAmount?: number;
+  
+  // Profit calculations (Restricted viewing)
+  totalCost?: number;
+  grossProfit?: number;
+  netProfit?: number;
+
+  // Payment
+  paymentMethod: 'Cash' | 'Bank / Raast' | 'JazzCash / EasyPaisa' | 'Credit / Due' | 'Mixed';
+  paidAmount: number;
+  changeDue: number;
+  balanceDue: number;
+
+  // Metadata
+  notes?: string;
+  referenceNumber?: string;
+  createdByUserId: string;
+  createdByUserName: string;
+  createdByUserRole: UserRole;
+  isSynced: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DashboardSummarySyncMetrics {
+  totalSales: number;
+  totalPurchases: number;
+  totalSalesReturns: number;
+  totalPurchaseReturns: number;
+  netSales: number;
+  netPurchases: number;
+  grossProfit: number;
+  netProfit: number;
+  todaySales: number;
+  todayPurchases: number;
+  todayProfit: number;
+  lastUpdated: string;
+}
+
 
 
 
